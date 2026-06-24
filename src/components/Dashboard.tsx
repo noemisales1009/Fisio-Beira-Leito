@@ -114,13 +114,7 @@ export default function Dashboard({ setCurrentView }: any) {
   const [equipNoteVisible, setEquipNoteVisible] = useState(false);
   const [activeVent, setActiveVent] = useState<number | null>(null);
   const [activeBed, setActiveBed]   = useState<number | null>(null);
-  const [ventItems, setVentItems]   = useState(() => buildInitVent(PATIENTS));
-
-  const changeVent = (i: number, delta: number) => {
-    setVentItems(prev => prev.map((item, idx) =>
-      idx === i ? { ...item, val: Math.max(0, item.val + delta) } : item
-    ));
-  };
+  const ventItems = buildInitVent(PATIENTS);
 
   const totalMapeados = ventItems.reduce((s, it) => s + it.val, 0);
   const totalVent     = VENT_DATA.reduce((s, d) => s + d.value, 0);
@@ -218,20 +212,10 @@ export default function Dashboard({ setCurrentView }: any) {
                   <span className={`text-[11px] block mb-2 leading-tight ${isSpecial ? 'text-clinical-700 dark:text-clinical-300 font-semibold' : 'text-slate-600 dark:text-slate-300'}`}>
                     {item.label}
                   </span>
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => changeVent(i, -1)} disabled={item.val === 0}
-                      className="w-6 h-6 rounded-md bg-slate-200 dark:bg-slate-800 hover:bg-rose-100 dark:hover:bg-rose-900/40 text-slate-500 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 flex items-center justify-center font-bold text-sm transition disabled:opacity-30 disabled:cursor-not-allowed shrink-0">
-                      −
-                    </button>
-                    <span className={`text-lg font-extrabold font-mono flex-1 text-center ${isSpecial
-                      ? 'text-clinical-700 dark:text-clinical-300'
-                      : item.val === 0 ? 'text-slate-400 dark:text-slate-600' : 'text-clinical-700 dark:text-clinical-400'
-                    }`}>{item.val}</span>
-                    <button onClick={() => changeVent(i, +1)}
-                      className="w-6 h-6 rounded-md bg-slate-200 dark:bg-slate-800 hover:bg-clinical-100 dark:hover:bg-clinical-900/40 text-slate-500 dark:text-slate-400 hover:text-clinical-600 dark:hover:text-clinical-400 flex items-center justify-center font-bold text-sm transition shrink-0">
-                      +
-                    </button>
-                  </div>
+                  <span className={`text-2xl font-extrabold font-mono block text-center ${isSpecial
+                    ? 'text-clinical-700 dark:text-clinical-300'
+                    : item.val === 0 ? 'text-slate-300 dark:text-slate-700' : 'text-clinical-700 dark:text-clinical-400'
+                  }`}>{item.val}</span>
                 </div>
               );
             })}
