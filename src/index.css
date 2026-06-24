@@ -1,0 +1,50 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-clinical-50: #f0f6f9;
+  --color-clinical-100: #ddecf2;
+  --color-clinical-200: #c0deea;
+  --color-clinical-300: #93c7dc;
+  --color-clinical-400: #62a9c9;
+  --color-clinical-500: #266181;
+  --color-clinical-600: #1e4d68;
+  --color-clinical-700: #1b4157;
+  --color-clinical-800: #1a3749;
+  --color-clinical-900: #192f3f;
+  --color-clinical-950: #0e1b26;
+
+  --color-slate-850: #151f32;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-title: "Poppins", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer utilities {
+  .pulse-active {
+    animation: pulse-clinical 1.5s infinite ease-in-out;
+  }
+}
+
+@keyframes pulse-clinical {
+    0%, 100% { transform: scale(1); opacity: 0.7; }
+    50% { transform: scale(1.15); opacity: 1; background-color: var(--color-clinical-500); box-shadow: 0 0 15px rgba(38, 97, 129, 0.6); }
+}
+
+/* Scrollbar customizada */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: #1e293b;
+}
+::-webkit-scrollbar-thumb {
+    background: #475569;
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+}
