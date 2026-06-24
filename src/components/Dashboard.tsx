@@ -3,23 +3,62 @@ import {
   PieChart, Pie, Tooltip, ResponsiveContainer,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Legend,
 } from 'recharts';
+import { PATIENTS, TOTAL_BEDS, Patient } from '../patients';
 
-const VENT_DATA = [
-  { name: 'Ar Ambiente',   value: 2,  fill: '#38bdf8' },
-  { name: 'Cateter Nasal', value: 1,  fill: '#0ea5e9' },
-  { name: 'Másc. Venturi', value: 1,  fill: '#0369a1' },
-  { name: 'CNAF',          value: 1,  fill: '#f97316' },
-  { name: 'VNI',           value: 2,  fill: '#a78bfa' },
-  { name: 'TQT em O₂',    value: 1,  fill: '#34d399' },
-  { name: 'TQT em VM',     value: 1,  fill: '#fb7185' },
-  { name: 'TOT em VM',     value: 1,  fill: '#fbbf24' },
-];
+/* ─── Cores por suporte ───────────────────────────────── */
+const SUPORTE_FILL: Record<string, string> = {
+  'Ar Ambiente':   '#38bdf8',
+  'Cateter Nasal': '#0ea5e9',
+  'Másc. Venturi': '#0369a1',
+  'CNAF':          '#f97316',
+  'VNI':           '#a78bfa',
+  'TQT em O₂':    '#34d399',
+  'TQT em VM':     '#fb7185',
+  'TOT em VM':     '#fbbf24',
+};
 
-const BED_DATA = [
-  { name: 'Ocupados',    value: 10, fill: '#0ea5e9' },
-  { name: 'Vagos',       value: 1,  fill: '#10b981' },
-  { name: 'Bloqueados',  value: 1,  fill: '#f43f5e' },
-];
+const SUPORTE_TO_VENT: Record<string, string> = {
+  'Ar Ambiente':    'Ar Ambiente',
+  'Cateter Nasal':  'Cateter Nasal (CN)',
+  'Másc. Venturi':  'Máscara Venturi',
+  'Máscara Comum':  'Máscara Comum',
+  'CNAF':           'CNAF',
+  'VNI':            'VNI',
+  'TQT em Ar Amb.': 'TQT em Ar Amb.',
+  'TQT em O₂':     'TQT em O₂',
+  'TQT em VM':      'TQT em VM',
+  'TOT em VM':      'TOT em VM',
+};
+
+function buildVentData(patients: Patient[]) {
+  const counts: Record<string, number> = {};
+  patients.forEach(p => { counts[p.suporte] = (counts[p.suporte] || 0) + 1; });
+  return Object.entries(counts)
+    .filter(([, v]) => v > 0)
+    .map(([name, value]) => ({ name, value, fill: SUPORTE_FILL[name] || '#94a3b8' }));
+}
+
+function buildInitVent(patients: Patient[]) {
+  const counts: Record<string, number> = {};
+  patients.forEach(p => {
+    const label = SUPORTE_TO_VENT[p.suporte] || p.suporte;
+    counts[label] = (counts[label] || 0) + 1;
+  });
+  return [
+    { label: 'Ar Ambiente',        val: counts['Ar Ambiente'] || 0 },
+    { label: 'Cateter Nasal (CN)', val: counts['Cateter Nasal (CN)'] || 0 },
+    { label: 'Máscara Venturi',    val: counts['Máscara Venturi'] || 0 },
+    { label: 'Máscara Comum',      val: counts['Máscara Comum'] || 0 },
+    { label: 'CNAF',               val: counts['CNAF'] || 0 },
+    { label: 'VNI',                val: counts['VNI'] || 0 },
+    { label: 'TQT em Ar Amb.',     val: counts['TQT em Ar Amb.'] || 0 },
+    { label: 'TQT em O₂',         val: counts['TQT em O₂'] || 0 },
+    { label: 'TQT em VM',          val: counts['TQT em VM'] || 0, special: true },
+    { label: 'TOT em VM',          val: counts['TOT em VM'] || 0, special: true },
+    { label: 'Pronados',           val: 0 },
+    { label: 'Em NOI',             val: 0 },
+  ];
+}
 
 const WEEK_DATA = [
   { dia: 'Seg', VM: 3, VNI: 1, CNAF: 1 },
@@ -57,27 +96,25 @@ function DonutCenter({ value, title, sub }: { value: string | number; title: str
   );
 }
 
-
-const INIT_VENT = [
-  { label: 'Ar Ambiente',        val: 2 },
-  { label: 'Cateter Nasal (CN)', val: 1 },
-  { label: 'Máscara Venturi',    val: 1 },
-  { label: 'Máscara Comum',      val: 0 },
-  { label: 'CNAF',               val: 1 },
-  { label: 'VNI',                val: 2 },
-  { label: 'TQT em Ar Amb.',     val: 0 },
-  { label: 'TQT em O₂',         val: 1 },
-  { label: 'TQT em VM',          val: 1, special: true },
-  { label: 'TOT em VM',          val: 1, special: true },
-  { label: 'Pronados',           val: 1 },
-  { label: 'Em NOI',             val: 0 },
-];
-
 export default function Dashboard({ setCurrentView }: any) {
+  /* ── Dados derivados dos pacientes ── */
+  const occupied      = PATIENTS.length;
+  const vacant        = Math.max(0, TOTAL_BEDS - occupied);
+  const occupancyPct  = Math.round((occupied / TOTAL_BEDS) * 100);
+  const progExtub     = PATIENTS.filter(p => p.status === 'Alta Prevista').length;
+  const atRisk        = PATIENTS.filter(p => p.status === 'Crítico' || p.status === 'Instável');
+  const alertPatient  = atRisk[0] ?? null;
+
+  const VENT_DATA = buildVentData(PATIENTS);
+  const BED_DATA  = [
+    { name: 'Ocupados', value: occupied,  fill: '#0ea5e9' },
+    { name: 'Vagos',    value: vacant,    fill: '#10b981' },
+  ];
+
   const [equipNoteVisible, setEquipNoteVisible] = useState(false);
   const [activeVent, setActiveVent] = useState<number | null>(null);
   const [activeBed, setActiveBed]   = useState<number | null>(null);
-  const [ventItems, setVentItems]   = useState(INIT_VENT);
+  const [ventItems, setVentItems]   = useState(() => buildInitVent(PATIENTS));
 
   const changeVent = (i: number, delta: number) => {
     setVentItems(prev => prev.map((item, idx) =>
@@ -86,23 +123,20 @@ export default function Dashboard({ setCurrentView }: any) {
   };
 
   const totalMapeados = ventItems.reduce((s, it) => s + it.val, 0);
+  const totalVent     = VENT_DATA.reduce((s, d) => s + d.value, 0);
 
-  const totalVent = VENT_DATA.reduce((s, d) => s + d.value, 0);
-  const totalBeds = 12;
   const ventWithPct = VENT_DATA.map(d => ({ ...d, pct: Math.round((d.value / totalVent) * 100) }));
-  const bedWithPct  = BED_DATA.map(d => ({ ...d, pct: Math.round((d.value / totalBeds) * 100) }));
+  const bedWithPct  = BED_DATA.map(d => ({ ...d, pct: Math.round((d.value / TOTAL_BEDS) * 100) }));
 
   const highlightVent = ventWithPct.map((d, i) => ({
-    ...d,
-    fill: activeVent === null || activeVent === i ? d.fill : d.fill + '55',
+    ...d, fill: activeVent === null || activeVent === i ? d.fill : d.fill + '55',
   }));
   const highlightBed = bedWithPct.map((d, i) => ({
-    ...d,
-    fill: activeBed === null || activeBed === i ? d.fill : d.fill + '44',
+    ...d, fill: activeBed === null || activeBed === i ? d.fill : d.fill + '44',
   }));
 
   return (
-    <section className="p-6 space-y-6">
+    <section className="p-4 sm:p-6 space-y-6">
 
       {/* ── Topo ── */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -113,11 +147,10 @@ export default function Dashboard({ setCurrentView }: any) {
             <i className="fa-solid fa-chart-pie"></i> Cenário Atual da UTI PED
           </h2>
 
-          {/* Big stats */}
           <div className="grid grid-cols-2 gap-3 mb-3">
             <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-xl text-center transition-colors">
               <span className="text-[11px] text-slate-500 dark:text-slate-400 block mb-1">Total de Leitos</span>
-              <span className="text-4xl font-extrabold text-slate-800 dark:text-white font-mono">12</span>
+              <span className="text-4xl font-extrabold text-slate-800 dark:text-white font-mono">{TOTAL_BEDS}</span>
             </div>
             <div
               onClick={() => setCurrentView('bedside')}
@@ -126,42 +159,44 @@ export default function Dashboard({ setCurrentView }: any) {
               <span className="text-[11px] text-clinical-600 dark:text-clinical-300 block mb-1">
                 Leitos Ocupados <i className="fa-solid fa-magnifying-glass text-[9px] ml-1"></i>
               </span>
-              <span className="text-4xl font-extrabold text-clinical-600 dark:text-clinical-400 font-mono">10</span>
-              {/* progress bar */}
+              <span className="text-4xl font-extrabold text-clinical-600 dark:text-clinical-400 font-mono">{occupied}</span>
               <div className="mt-2 w-full h-1 bg-clinical-100 dark:bg-clinical-900/40 rounded-full overflow-hidden">
-                <div className="h-full bg-clinical-500 rounded-full" style={{ width: '83%' }}></div>
+                <div className="h-full bg-clinical-500 rounded-full transition-all" style={{ width: `${occupancyPct}%` }}></div>
               </div>
-              <span className="text-[9px] text-clinical-500 dark:text-clinical-400 mt-0.5 block">83% ocupação</span>
+              <span className="text-[9px] text-clinical-500 dark:text-clinical-400 mt-0.5 block">{occupancyPct}% ocupação</span>
             </div>
           </div>
 
-          {/* Secondary stats */}
           <div className="grid grid-cols-3 gap-2">
             <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/40 p-2.5 rounded-xl text-center">
               <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Vagos</span>
-              <span className="text-xl font-bold text-emerald-600 dark:text-emerald-400 font-mono">1</span>
+              <span className="text-xl font-bold text-emerald-600 dark:text-emerald-400 font-mono">{vacant}</span>
             </div>
             <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-800/40 p-2.5 rounded-xl text-center">
-              <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Bloqueados</span>
-              <span className="text-xl font-bold text-rose-600 dark:text-rose-400 font-mono">1</span>
+              <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Em VM</span>
+              <span className="text-xl font-bold text-rose-600 dark:text-rose-400 font-mono">{PATIENTS.filter(p => p.vm).length}</span>
             </div>
             <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/40 p-2.5 rounded-xl text-center">
-              <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Prog. Extub.</span>
-              <span className="text-xl font-bold text-amber-600 dark:text-amber-400 font-mono">2</span>
+              <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Prog. Alta</span>
+              <span className="text-xl font-bold text-amber-600 dark:text-amber-400 font-mono">{progExtub}</span>
             </div>
           </div>
 
-          <div className="mt-4 border-t border-slate-100 dark:border-slate-800 pt-4">
-            <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-500/30 p-3 rounded-xl flex items-center gap-3">
-              <span className="w-8 h-8 rounded-lg bg-rose-100 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center text-sm shrink-0">
-                <i className="fa-solid fa-triangle-exclamation"></i>
-              </span>
-              <div>
-                <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider block">Alerta Ventilatório Ativo</span>
-                <p className="text-xs text-slate-600 dark:text-slate-200 mt-0.5">Leito 04: Bronquiolite Grave. Requer cuidados críticos.</p>
+          {alertPatient && (
+            <div className="mt-4 border-t border-slate-100 dark:border-slate-800 pt-4">
+              <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-500/30 p-3 rounded-xl flex items-center gap-3">
+                <span className="w-8 h-8 rounded-lg bg-rose-100 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center text-sm shrink-0">
+                  <i className="fa-solid fa-triangle-exclamation"></i>
+                </span>
+                <div>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider block">Alerta Ventilatório Ativo</span>
+                  <p className="text-xs text-slate-600 dark:text-slate-200 mt-0.5">
+                    Leito {alertPatient.id}: {alertPatient.diagnostico}. {alertPatient.status === 'Crítico' ? 'Paciente em estado crítico.' : 'Requer atenção.'}
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Cenário Ventilatório */}
@@ -254,7 +289,7 @@ export default function Dashboard({ setCurrentView }: any) {
           <h3 className="text-xs font-bold uppercase tracking-wider text-clinical-600 dark:text-clinical-400 flex items-center gap-2 mb-0.5">
             <i className="fa-solid fa-bed-pulse"></i> Ocupação de Leitos
           </h3>
-          <p className="text-[10px] text-slate-400 mb-3">Status dos {totalBeds} leitos da UTI PED</p>
+          <p className="text-[10px] text-slate-400 mb-3">Status dos {TOTAL_BEDS} leitos da UTI PED</p>
 
           <div className="relative h-[180px]">
             <ResponsiveContainer width="100%" height={180}>
@@ -272,7 +307,7 @@ export default function Dashboard({ setCurrentView }: any) {
                 <Tooltip content={<ChartTooltip />} />
               </PieChart>
             </ResponsiveContainer>
-            <DonutCenter value={totalBeds} title="leitos" sub="83% ocupação" />
+            <DonutCenter value={TOTAL_BEDS} title="leitos" sub={`${occupancyPct}% ocupação`} />
           </div>
 
           <div className="mt-2 flex flex-col gap-2.5">
@@ -288,7 +323,7 @@ export default function Dashboard({ setCurrentView }: any) {
                     <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.fill }}></span>
                     <span className="text-[10px] text-slate-500 dark:text-slate-400">{d.name}</span>
                   </div>
-                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300">{d.value}/{totalBeds}</span>
+                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300">{d.value}/{TOTAL_BEDS}</span>
                 </div>
                 <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                   <div className="h-full rounded-full transition-all duration-300" style={{ width: `${d.pct}%`, backgroundColor: d.fill }}></div>
@@ -361,11 +396,11 @@ export default function Dashboard({ setCurrentView }: any) {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold block mb-1">Identificação</label>
-              <input type="text" defaultValue="Leito 02 e 07" className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-xl p-3 text-slate-800 dark:text-white font-semibold focus:outline-none focus:border-clinical-500 transition-colors" />
+              <input type="text" placeholder="Ex: Leito 02 e 07" className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-xl p-3 text-slate-800 dark:text-white font-semibold focus:outline-none focus:border-clinical-500 transition-colors" />
             </div>
             <div>
               <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold block mb-1">Registro O₂</label>
-              <input type="text" defaultValue="2002" className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-xl p-3 text-slate-800 dark:text-white font-mono font-bold focus:outline-none focus:border-clinical-500 transition-colors" />
+              <input type="text" placeholder="Ex: 2002" className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-xl p-3 text-slate-800 dark:text-white font-mono font-bold focus:outline-none focus:border-clinical-500 transition-colors" />
             </div>
           </div>
         </div>
@@ -375,15 +410,28 @@ export default function Dashboard({ setCurrentView }: any) {
             <h3 className="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 mb-1">Pacientes em Risco Ventilatório?</h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed mb-4">Critérios: ↑ IO | ↓ PF | Necessidade de ↑ PV | ↑ trabalho resp.</p>
           </div>
-          <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-500/20 p-3 rounded-xl flex items-center gap-3">
-            <span className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center text-sm shrink-0">
-              <i className="fa-solid fa-gauge-high"></i>
-            </span>
-            <div>
-              <span className="text-xs font-bold text-amber-600 dark:text-amber-400 block">2 Pacientes no Radar</span>
-              <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Leito 04 (Extremo) & Leito 08 (Instável)</span>
+          {atRisk.length > 0 ? (
+            <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-500/20 p-3 rounded-xl flex items-center gap-3">
+              <span className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center text-sm shrink-0">
+                <i className="fa-solid fa-gauge-high"></i>
+              </span>
+              <div>
+                <span className="text-xs font-bold text-amber-600 dark:text-amber-400 block">
+                  {atRisk.length} Paciente{atRisk.length !== 1 ? 's' : ''} no Radar
+                </span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
+                  {atRisk.map(p => `Leito ${p.id} (${p.status})`).join(' · ')}
+                </span>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-500/20 p-3 rounded-xl flex items-center gap-3">
+              <span className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-sm shrink-0">
+                <i className="fa-solid fa-circle-check"></i>
+              </span>
+              <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">Nenhum paciente em risco</span>
+            </div>
+          )}
         </div>
       </div>
     </section>
