@@ -24,7 +24,7 @@ export default function App() {
   // Helper properties to map views to headers
   const getHeaderInfo = () => {
     switch (currentView) {
-      case 'dashboard': return { title: 'Painel Geral da UTIP', parent: 'Painel de Controle Central' };
+      case 'dashboard': return { title: 'Painel Geral da UTI PED', parent: 'Painel de Controle Central' };
       case 'bedside': return { title: 'Ficha Clínica de Monitoramento', parent: 'Visita Beira Leito' };
       case 'scores': return { title: 'Módulos de Avaliação Clínica', parent: 'Scores e Calculadoras' };
       case 'gasometry': return { title: 'Estatísticas de Gasometria', parent: 'Gráficos de Oxigenação' };
@@ -59,7 +59,7 @@ export default function App() {
               <i className="fa-solid fa-lungs"></i>
             </div>
             <h1 className="text-2xl font-extrabold tracking-tight text-clinical-800 dark:text-white font-title transition-colors">Fisio Beira Leito</h1>
-            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1 transition-colors">Gestão de Suporte Ventilatório & Scores UTIP</p>
+            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1 transition-colors">Gestão de Suporte Ventilatório & Scores UTI PED</p>
           </div>
 
           <form onSubmit={handleLogin} className="mt-8 space-y-4 relative z-10">

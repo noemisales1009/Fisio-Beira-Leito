@@ -110,7 +110,7 @@ export default function Dashboard({ setCurrentView }: any) {
         {/* Cenário Atual */}
         <div className="lg:col-span-5 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-5 rounded-2xl shadow-sm dark:shadow-none transition-colors duration-300">
           <h2 className="text-xs font-bold uppercase tracking-wider text-clinical-600 dark:text-clinical-400 flex items-center gap-2 mb-4">
-            <i className="fa-solid fa-chart-pie"></i> Cenário Atual da UTIP
+            <i className="fa-solid fa-chart-pie"></i> Cenário Atual da UTI PED
           </h2>
 
           {/* Big stats */}
@@ -254,7 +254,7 @@ export default function Dashboard({ setCurrentView }: any) {
           <h3 className="text-xs font-bold uppercase tracking-wider text-clinical-600 dark:text-clinical-400 flex items-center gap-2 mb-0.5">
             <i className="fa-solid fa-bed-pulse"></i> Ocupação de Leitos
           </h3>
-          <p className="text-[10px] text-slate-400 mb-3">Status dos {totalBeds} leitos da UTIP</p>
+          <p className="text-[10px] text-slate-400 mb-3">Status dos {totalBeds} leitos da UTI PED</p>
 
           <div className="relative h-[180px]">
             <ResponsiveContainer width="100%" height={180}>

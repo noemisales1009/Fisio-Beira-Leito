@@ -2,7 +2,7 @@ import React from 'react';
 
 export default function Sidebar({ currentView, setCurrentView, onLogout, toggleMobileMenu }: any) {
   const navItems = [
-    { id: 'dashboard', icon: 'fa-gauge-high', label: 'Painel Geral (UTIP)' },
+    { id: 'dashboard', icon: 'fa-gauge-high', label: 'Painel Geral (UTI PED)' },
     { id: 'bedside', icon: 'fa-bed', label: 'Ficha & Beira Leito' },
     { id: 'scores', icon: 'fa-square-poll-vertical', label: 'Scores & Calculadoras' },
     { id: 'gasometry', icon: 'fa-droplet', label: 'Gasometria & Curvas' },
@@ -20,7 +20,7 @@ export default function Sidebar({ currentView, setCurrentView, onLogout, toggleM
             </span>
             <div>
               <h2 className="text-sm font-bold text-clinical-800 dark:text-white font-title transition-colors">Fisio Beira Leito</h2>
-              <span className="text-[10px] text-clinical-500 dark:text-clinical-400 font-semibold tracking-wider uppercase transition-colors">Plataforma UTIP</span>
+              <span className="text-[10px] text-clinical-500 dark:text-clinical-400 font-semibold tracking-wider uppercase transition-colors">Plataforma UTI PED</span>
             </div>
           </div>
           <button className="md:hidden text-slate-400 hover:text-clinical-600 dark:hover:text-white" onClick={toggleMobileMenu}>
