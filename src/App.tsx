@@ -3,9 +3,12 @@ import { Moon, Sun } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import Scores from './components/Scores';
+import Bedside from './components/Bedside';
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [currentView, setCurrentView] = useState('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -39,6 +42,14 @@ export default function App() {
   if (!isLoggedIn) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center p-4 bg-slate-50 dark:bg-slate-900 font-sans transition-colors duration-300">
+        <button
+          onClick={() => setIsDarkMode(!isDarkMode)}
+          type="button"
+          className="fixed top-4 right-4 z-50 text-slate-400 hover:text-clinical-500 transition-colors p-2 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md"
+          title={isDarkMode ? 'Modo claro' : 'Modo escuro'}
+        >
+          {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+        </button>
         <div className="bg-white dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700/60 p-8 rounded-2xl shadow-xl dark:shadow-2xl w-full max-w-md relative overflow-hidden transition-colors duration-300">
           <div className="absolute -top-16 -right-16 w-32 h-32 bg-clinical-500/10 dark:bg-clinical-500/20 rounded-full blur-xl"></div>
           <div className="absolute -bottom-16 -left-16 w-32 h-32 bg-clinical-500/5 dark:bg-clinical-500/10 rounded-full blur-xl"></div>
@@ -53,22 +64,22 @@ export default function App() {
 
           <form onSubmit={handleLogin} className="mt-8 space-y-4 relative z-10">
             <div>
-              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-1 transition-colors">Identificação (CRM / CREFITO)</label>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-1 transition-colors">E-mail</label>
               <div className="relative">
                 <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
-                  <i className="fa-solid fa-user-doctor"></i>
+                  <i className="fa-solid fa-envelope"></i>
                 </span>
-                <input type="text" required defaultValue="CREFITO 48291-F" className="w-full bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 rounded-xl py-2.5 pl-10 pr-4 text-sm text-slate-800 dark:text-white focus:outline-none focus:border-clinical-500 focus:ring-1 focus:ring-clinical-500 transition" />
+                <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="seu@email.com" className="w-full bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 rounded-xl py-2.5 pl-10 pr-4 text-sm text-slate-800 dark:text-white focus:outline-none focus:border-clinical-500 focus:ring-1 focus:ring-clinical-500 transition" />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-1 transition-colors">Senha de Acesso</label>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-1 transition-colors">Senha</label>
               <div className="relative">
                 <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
                   <i className="fa-solid fa-lock"></i>
                 </span>
-                <input type="password" required defaultValue="123456" className="w-full bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 rounded-xl py-2.5 pl-10 pr-4 text-sm text-slate-800 dark:text-white focus:outline-none focus:border-clinical-500 focus:ring-1 focus:ring-clinical-500 transition" />
+                <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" className="w-full bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 rounded-xl py-2.5 pl-10 pr-4 text-sm text-slate-800 dark:text-white focus:outline-none focus:border-clinical-500 focus:ring-1 focus:ring-clinical-500 transition" />
               </div>
             </div>
 
@@ -77,11 +88,6 @@ export default function App() {
             </button>
           </form>
           
-          <div className="mt-6 text-center relative z-10 flex justify-center">
-            <button onClick={() => setIsDarkMode(!isDarkMode)} type="button" className="text-slate-400 hover:text-clinical-500 transition-colors p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800">
-              {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-            </button>
-          </div>
         </div>
       </div>
     );
@@ -118,6 +124,9 @@ export default function App() {
               <select className="bg-transparent text-clinical-800 dark:text-white font-semibold focus:outline-none cursor-pointer">
                 <option value="SD" className="bg-white dark:bg-slate-950">SD (Diurno)</option>
                 <option value="SN" className="bg-white dark:bg-slate-950">SN (Noturno)</option>
+                <option value="M" className="bg-white dark:bg-slate-950">M (Manhã)</option>
+                <option value="T" className="bg-white dark:bg-slate-950">T (Tarde)</option>
+                <option value="MT" className="bg-white dark:bg-slate-950">MT (Manhã/Tarde)</option>
               </select>
             </div>
             <span className="text-xs bg-clinical-50 dark:bg-clinical-500/10 text-clinical-600 dark:text-clinical-400 border border-clinical-200 dark:border-clinical-500/20 px-2.5 py-1 rounded-lg font-bold font-mono transition-colors duration-300">
@@ -129,9 +138,10 @@ export default function App() {
         <div className="flex-1 overflow-y-auto">
            {currentView === 'dashboard' && <Dashboard setCurrentView={setCurrentView} />}
            {currentView === 'scores' && <Scores />}
-           
+           {currentView === 'bedside' && <Bedside />}
+
            {/* Placeholders for views not fully implemented to save tokens */}
-           {['bedside', 'gasometry', 'admission'].includes(currentView) && (
+           {['gasometry', 'admission'].includes(currentView) && (
               <div className="flex flex-col items-center justify-center h-full text-slate-500 dark:text-slate-400">
                 <i className="fa-solid fa-code text-5xl mb-4 text-slate-300 dark:text-slate-700"></i>
                 <h2 className="text-xl font-bold text-slate-700 dark:text-slate-300">Módulo em Integração</h2>
