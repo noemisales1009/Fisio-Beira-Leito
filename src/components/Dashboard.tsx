@@ -3,6 +3,9 @@ import {
   PieChart, Pie, Tooltip, ResponsiveContainer,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Legend,
 } from 'recharts';
+import { FileDown } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { PATIENTS, TOTAL_BEDS, Patient } from '../patients';
 
 /* ─── Cores por suporte ───────────────────────────────── */
@@ -96,7 +99,7 @@ function DonutCenter({ value, title, sub }: { value: string | number; title: str
   );
 }
 
-export default function Dashboard({ setCurrentView }: any) {
+export default function Dashboard({ setCurrentView, turno, physioName }: any) {
   /* ── Dados derivados dos pacientes ── */
   const occupied      = PATIENTS.length;
   const vacant        = Math.max(0, TOTAL_BEDS - occupied);
@@ -129,10 +132,329 @@ export default function Dashboard({ setCurrentView }: any) {
     ...d, fill: activeBed === null || activeBed === i ? d.fill : d.fill + '44',
   }));
 
+  const [exportingPdf, setExportingPdf] = useState(false);
+
+  const handleExportPdf = async () => {
+    if (exportingPdf) return;
+    setExportingPdf(true);
+    await new Promise(r => setTimeout(r, 0)); // deixa o botão repintar antes do trabalho síncrono
+    try {
+      const CLINICAL_500: [number, number, number] = [38, 97, 129];
+      const CLINICAL_700: [number, number, number] = [27, 65, 87];
+      const CLINICAL_800: [number, number, number] = [26, 55, 73];
+      const SLATE_100: [number, number, number] = [241, 245, 249];
+      const SLATE_800: [number, number, number] = [30, 41, 59];
+      const ROSE_50: [number, number, number] = [255, 241, 242];
+      const ROSE_300: [number, number, number] = [253, 164, 175];
+      const ROSE_700: [number, number, number] = [190, 18, 60];
+
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 40;
+      const contentTop = 92;
+      const contentBottom = 50;
+
+      const dataHora = new Date().toLocaleString('pt-BR');
+      const fileDate = new Date().toISOString().slice(0, 10);
+
+      const drawHeader = () => {
+        pdf.setFillColor(...CLINICAL_500);
+        pdf.rect(0, 0, pageWidth, 70, 'F');
+
+        pdf.setTextColor(255, 255, 255);
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(15);
+        pdf.text('Fisio Beira Leito', margin, 28);
+
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(9.5);
+        pdf.text('Relatório de Cenário Atual — UTI PED', margin, 44);
+
+        pdf.setFontSize(8);
+        const rightX = pageWidth - margin;
+        pdf.text(`Data/Hora: ${dataHora}`, rightX, 22, { align: 'right' });
+        pdf.text(`Fisioterapeuta: ${physioName || '—'}`, rightX, 35, { align: 'right' });
+        pdf.text(`Turno: ${turno || '—'}`, rightX, 48, { align: 'right' });
+      };
+
+      const drawFooter = (pageNum: number, totalPages: number) => {
+        pdf.setDrawColor(...CLINICAL_500);
+        pdf.setLineWidth(0.75);
+        pdf.line(margin, pageHeight - 30, pageWidth - margin, pageHeight - 30);
+
+        pdf.setTextColor(...CLINICAL_800);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(7.5);
+        pdf.text('Documento gerado automaticamente pelo Fisio Beira Leito', margin, pageHeight - 16);
+        pdf.text(`Página ${pageNum} de ${totalPages}`, pageWidth - margin, pageHeight - 16, { align: 'right' });
+      };
+
+      let cursorY = contentTop;
+
+      const ensureSpace = (height: number) => {
+        if (cursorY + height > pageHeight - contentBottom) {
+          pdf.addPage();
+          cursorY = contentTop;
+        }
+      };
+
+      const sectionTitle = (title: string) => {
+        ensureSpace(24);
+        pdf.setTextColor(...CLINICAL_700);
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(11);
+        pdf.text(title, margin, cursorY);
+        cursorY += 10;
+      };
+
+      const baseTable = (head: string[][], body: (string | number)[][], opts: any = {}) => {
+        autoTable(pdf, {
+          startY: cursorY,
+          margin: { left: margin, right: margin, top: contentTop, bottom: contentBottom },
+          head,
+          body: body as any,
+          theme: 'striped',
+          headStyles: { fillColor: CLINICAL_500, textColor: 255, fontSize: 8.5 },
+          bodyStyles: { fontSize: 9, textColor: SLATE_800 },
+          alternateRowStyles: { fillColor: SLATE_100 },
+          ...opts,
+        });
+        cursorY = (pdf as any).lastAutoTable.finalY + 22;
+      };
+
+      // fontes padrão do PDF não têm glyph para dígitos subscritos (ex.: "O₂")
+      const pdfSafe = (str: string) => str.replace(/[₀₁₂₃₄₅₆₇₈₉]/g, (c) => String('₀₁₂₃₄₅₆₇₈₉'.indexOf(c)));
+
+      const hexToRgb = (hex: string): [number, number, number] => {
+        const n = parseInt(hex.replace('#', ''), 16);
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+      };
+
+      const SLATE_200: [number, number, number] = [226, 232, 240];
+      const SLATE_400: [number, number, number] = [148, 163, 184];
+      const SLATE_50: [number, number, number] = [248, 250, 252];
+      const CARD_PAD = 16;
+
+      const drawCard = (height: number) => {
+        pdf.setFillColor(...SLATE_50);
+        pdf.setDrawColor(...SLATE_200);
+        pdf.setLineWidth(0.75);
+        pdf.roundedRect(margin, cursorY, pageWidth - margin * 2, height, 6, 6, 'FD');
+        return cursorY + CARD_PAD;
+      };
+
+      const drawDonutWithLegend = (
+        data: { name: string; value: number; fill: string; pct?: number }[],
+        centerLabel: string,
+      ) => {
+        const total = data.reduce((s, d) => s + d.value, 0);
+        const visible = data.filter(d => d.value > 0);
+        const legendRowHeight = 16;
+        const innerHeight = Math.max(120, visible.length * legendRowHeight + 6);
+        const cardHeight = innerHeight + CARD_PAD * 2;
+        ensureSpace(cardHeight + 14);
+
+        const innerTop = drawCard(cardHeight);
+        const cx = margin + CARD_PAD + 58;
+        const cy = innerTop + innerHeight / 2;
+        const radius = 54;
+        const innerRadius = 30;
+        const gapRad = visible.length > 1 ? 0.045 : 0;
+        const ctx = (pdf as any).context2d;
+
+        let angle = -Math.PI / 2;
+        const availableAngle = Math.PI * 2 - gapRad * visible.length;
+        visible.forEach(d => {
+          const slice = (d.value / total) * availableAngle;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.arc(cx, cy, radius, angle, angle + slice, false);
+          ctx.closePath();
+          ctx.fillStyle = d.fill;
+          ctx.fill();
+          angle += slice + gapRad;
+        });
+        ctx.beginPath();
+        ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2, false);
+        ctx.closePath();
+        ctx.fillStyle = '#f8fafc';
+        ctx.fill();
+
+        pdf.setTextColor(...SLATE_800);
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(16);
+        pdf.text(String(total), cx, cy - 1, { align: 'center' });
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(6);
+        pdf.setTextColor(...SLATE_400);
+        pdf.text(pdfSafe(centerLabel).toUpperCase(), cx, cy + 10, { align: 'center' });
+
+        const legendX = margin + CARD_PAD + 145;
+        const legendRight = pageWidth - margin - CARD_PAD;
+        let legendY = innerTop + (innerHeight - visible.length * legendRowHeight) / 2 + 10;
+        visible.forEach(d => {
+          pdf.setFillColor(...hexToRgb(d.fill));
+          pdf.circle(legendX, legendY - 3, 3.2, 'F');
+          pdf.setTextColor(...SLATE_800);
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(8.5);
+          pdf.text(pdfSafe(d.name), legendX + 10, legendY);
+          pdf.setFont('helvetica', 'bold');
+          pdf.text(`${d.value}`, legendRight - 30, legendY, { align: 'right' });
+          if (d.pct != null) {
+            pdf.setFont('helvetica', 'normal');
+            pdf.setTextColor(...SLATE_400);
+            pdf.setFontSize(7.5);
+            pdf.text(`${d.pct}%`, legendRight, legendY, { align: 'right' });
+          }
+          legendY += legendRowHeight;
+        });
+
+        cursorY += cardHeight + 20;
+      };
+
+      const drawWeeklyBarChart = () => {
+        const chartHeight = 100;
+        const innerHeight = chartHeight + 50;
+        const cardHeight = innerHeight + CARD_PAD * 2;
+        ensureSpace(cardHeight + 14);
+
+        const innerTop = drawCard(cardHeight);
+        const chartX = margin + CARD_PAD;
+        const chartTop = innerTop + 4;
+        const chartWidth = pageWidth - margin * 2 - CARD_PAD * 2;
+        const baseline = chartTop + chartHeight;
+        const seriesColors: Record<'VM' | 'VNI' | 'CNAF', string> = { VM: '#f43f5e', VNI: '#0ea5e9', CNAF: '#f97316' };
+        const keys: Array<'VM' | 'VNI' | 'CNAF'> = ['VM', 'VNI', 'CNAF'];
+        const maxVal = Math.max(...WEEK_DATA.flatMap(w => keys.map(k => w[k])), 1);
+        const groupWidth = chartWidth / WEEK_DATA.length;
+        const barWidth = groupWidth / 6;
+
+        // grade horizontal (0/25/50/75/100% do máximo)
+        pdf.setDrawColor(...SLATE_200);
+        pdf.setLineWidth(0.4);
+        for (let g = 0; g <= 4; g++) {
+          const y = baseline - (g / 4) * (chartHeight - 14);
+          pdf.line(chartX, y, chartX + chartWidth, y);
+        }
+
+        WEEK_DATA.forEach((w, i) => {
+          const groupX = chartX + i * groupWidth;
+          const groupStart = groupX + groupWidth / 2 - (barWidth * 3 + 6) / 2;
+          keys.forEach((key, si) => {
+            const val = w[key];
+            const h = (val / maxVal) * (chartHeight - 14);
+            const barX = groupStart + si * (barWidth + 3);
+            pdf.setFillColor(...hexToRgb(seriesColors[key]));
+            pdf.roundedRect(barX, baseline - h, barWidth, h, 1, 1, 'F');
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(6);
+            pdf.setTextColor(...hexToRgb(seriesColors[key]));
+            pdf.text(String(val), barX + barWidth / 2, baseline - h - 3, { align: 'center' });
+          });
+          pdf.setTextColor(...SLATE_800);
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(7.5);
+          pdf.text(w.dia, groupX + groupWidth / 2, baseline + 14, { align: 'center' });
+        });
+
+        pdf.setDrawColor(...SLATE_400);
+        pdf.setLineWidth(0.6);
+        pdf.line(chartX, baseline, chartX + chartWidth, baseline);
+
+        let legendX = chartX;
+        const legendY = baseline + 34;
+        keys.forEach(key => {
+          pdf.setFillColor(...hexToRgb(seriesColors[key]));
+          pdf.roundedRect(legendX, legendY - 7, 8, 8, 1, 1, 'F');
+          pdf.setTextColor(...SLATE_800);
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(8);
+          pdf.text(key, legendX + 12, legendY);
+          legendX += 55;
+        });
+
+        cursorY += cardHeight + 20;
+      };
+
+      drawHeader();
+
+      // 1. Resumo geral
+      sectionTitle('Resumo Geral da UTI PED');
+      baseTable(
+        [['Total de Leitos', 'Ocupados', 'Vagos', 'Em VM', 'Alta Prevista']],
+        [[TOTAL_BEDS, `${occupied} (${occupancyPct}%)`, vacant, PATIENTS.filter(p => p.vm).length, progExtub]],
+        { bodyStyles: { fontSize: 10, halign: 'center', fontStyle: 'bold', textColor: SLATE_800 } },
+      );
+
+      if (alertPatient) {
+        ensureSpace(40);
+        pdf.setFillColor(...ROSE_50);
+        pdf.setDrawColor(...ROSE_300);
+        pdf.roundedRect(margin, cursorY, pageWidth - margin * 2, 36, 4, 4, 'FD');
+        pdf.setTextColor(...ROSE_700);
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(8.5);
+        pdf.text('ALERTA VENTILATÓRIO ATIVO', margin + 10, cursorY + 15);
+        pdf.setFont('helvetica', 'normal');
+        pdf.text(
+          `Leito ${alertPatient.id}: ${alertPatient.diagnostico}. ${alertPatient.status === 'Crítico' ? 'Paciente em estado crítico.' : 'Requer atenção.'}`,
+          margin + 10, cursorY + 27,
+        );
+        cursorY += 36 + 22;
+      }
+
+      // 2. Cenário ventilatório geral
+      sectionTitle('Cenário Ventilatório Geral');
+      baseTable(
+        [['Modalidade', 'Nº Pacientes']],
+        ventItems.map(it => [pdfSafe(it.label), it.val]),
+        {
+          columnStyles: { 1: { halign: 'center', cellWidth: 90 } },
+          foot: [['Total Mapeados', totalMapeados]],
+          footStyles: { fillColor: SLATE_100, textColor: SLATE_800, fontStyle: 'bold', fontSize: 9 },
+        },
+      );
+
+      // 3. Suporte ventilatório (distribuição) — gráfico de rosca
+      sectionTitle('Suporte Ventilatório — Distribuição por Modalidade');
+      drawDonutWithLegend(ventWithPct, 'pacientes');
+
+      // 4. Ocupação de leitos — gráfico de rosca
+      sectionTitle('Ocupação de Leitos');
+      drawDonutWithLegend(bedWithPct.map(d => ({ ...d, pct: d.pct })), 'leitos');
+
+      // 5. Tendência semanal — gráfico de barras
+      sectionTitle('Tendência Semanal — Últimos 7 Dias');
+      drawWeeklyBarChart();
+
+      const totalPages = pdf.getNumberOfPages();
+      for (let i = 1; i <= totalPages; i++) {
+        pdf.setPage(i);
+        if (i > 1) drawHeader();
+        drawFooter(i, totalPages);
+      }
+
+      pdf.save(`relatorio-uti-ped_${fileDate}_${turno || 'turno'}.pdf`);
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   return (
     <section className="p-4 sm:p-6 space-y-6">
 
       {/* ── Topo ── */}
+      <div className="flex justify-end">
+        <button
+          onClick={handleExportPdf}
+          disabled={exportingPdf}
+          className="flex items-center gap-2 text-xs font-semibold bg-clinical-500 hover:bg-clinical-600 disabled:opacity-60 text-white px-3 py-2 rounded-xl shadow-sm transition"
+        >
+          <FileDown size={14} /> {exportingPdf ? 'Gerando PDF...' : 'Exportar PDF'}
+        </button>
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
         {/* Cenário Atual */}

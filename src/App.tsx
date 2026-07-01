@@ -4,6 +4,19 @@ import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import Scores from './components/Scores';
 import Bedside from './components/Bedside';
+import TurnoModal, { TURNO_OPTIONS } from './components/TurnoModal';
+
+const TURNO_STORAGE_KEY = 'fisio_turno';
+const PHYSIO_NAME = 'Dra. Mariana S.';
+
+function suggestTurno() {
+  const hour = new Date().getHours();
+  return hour >= 7 && hour < 19 ? 'SD' : 'SN';
+}
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -12,6 +25,28 @@ export default function App() {
   const [currentView, setCurrentView] = useState('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [turno, setTurno] = useState<string | null>(null);
+  const [showTurnoModal, setShowTurnoModal] = useState(false);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem(TURNO_STORAGE_KEY) || 'null');
+      if (saved && saved.date === todayKey()) {
+        setTurno(saved.turno);
+        return;
+      }
+    } catch {
+      // ignora entrada corrompida e solicita o turno novamente
+    }
+    setShowTurnoModal(true);
+  }, [isLoggedIn]);
+
+  const handleSetTurno = (value: string) => {
+    setTurno(value);
+    localStorage.setItem(TURNO_STORAGE_KEY, JSON.stringify({ turno: value, date: todayKey() }));
+    setShowTurnoModal(false);
+  };
 
   useEffect(() => {
     if (isDarkMode) {
@@ -100,8 +135,10 @@ export default function App() {
       <div className={`fixed inset-0 bg-black/80 z-40 transition-opacity md:hidden ${isMobileMenuOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsMobileMenuOpen(false)}></div>
       
       <div className={`fixed inset-y-0 left-0 z-50 w-64 transform transition-transform duration-300 md:relative md:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-         <Sidebar currentView={currentView} setCurrentView={setCurrentView} onLogout={() => setIsLoggedIn(false)} toggleMobileMenu={() => setIsMobileMenuOpen(!isMobileMenuOpen)} />
+         <Sidebar currentView={currentView} setCurrentView={setCurrentView} onLogout={() => setIsLoggedIn(false)} toggleMobileMenu={() => setIsMobileMenuOpen(!isMobileMenuOpen)} turno={turno} physioName={PHYSIO_NAME} />
       </div>
+
+      {showTurnoModal && <TurnoModal suggested={suggestTurno()} onConfirm={handleSetTurno} />}
 
       <main className="flex-1 flex flex-col h-full overflow-hidden min-w-0">
         <header className="h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-6 flex items-center justify-between shrink-0 transition-colors duration-300">
@@ -121,12 +158,11 @@ export default function App() {
             </button>
             <div className="hidden sm:flex items-center gap-2 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-1.5 rounded-lg text-xs transition-colors duration-300">
               <span className="text-slate-500 dark:text-slate-400"><i className="fa-regular fa-clock"></i> Turno:</span>
-              <select className="bg-transparent text-clinical-800 dark:text-white font-semibold focus:outline-none cursor-pointer">
-                <option value="SD" className="bg-white dark:bg-slate-950">SD (Diurno)</option>
-                <option value="SN" className="bg-white dark:bg-slate-950">SN (Noturno)</option>
-                <option value="M" className="bg-white dark:bg-slate-950">M (Manhã)</option>
-                <option value="T" className="bg-white dark:bg-slate-950">T (Tarde)</option>
-                <option value="MT" className="bg-white dark:bg-slate-950">MT (Manhã/Tarde)</option>
+              <select value={turno ?? ''} onChange={e => handleSetTurno(e.target.value)} className="bg-transparent text-clinical-800 dark:text-white font-semibold focus:outline-none cursor-pointer">
+                {!turno && <option value="" disabled className="bg-white dark:bg-slate-950">Selecionar</option>}
+                {TURNO_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value} className="bg-white dark:bg-slate-950">{opt.label} ({opt.desc})</option>
+                ))}
               </select>
             </div>
             <span className="text-xs bg-clinical-50 dark:bg-clinical-500/10 text-clinical-600 dark:text-clinical-400 border border-clinical-200 dark:border-clinical-500/20 px-2.5 py-1 rounded-lg font-bold font-mono transition-colors duration-300">
@@ -136,7 +172,7 @@ export default function App() {
         </header>
 
         <div className="flex-1 overflow-y-auto">
-           {currentView === 'dashboard' && <Dashboard setCurrentView={setCurrentView} />}
+           {currentView === 'dashboard' && <Dashboard setCurrentView={setCurrentView} turno={turno} physioName={PHYSIO_NAME} />}
            {currentView === 'scores' && <Scores />}
            {currentView === 'bedside' && <Bedside />}
 

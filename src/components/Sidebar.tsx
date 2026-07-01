@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function Sidebar({ currentView, setCurrentView, onLogout, toggleMobileMenu }: any) {
+export default function Sidebar({ currentView, setCurrentView, onLogout, toggleMobileMenu, turno, physioName }: any) {
   const navItems = [
     { id: 'dashboard', icon: 'fa-gauge-high', label: 'Painel Geral (UTI PED)' },
     { id: 'bedside', icon: 'fa-bed', label: 'Ficha & Beira Leito' },
@@ -34,8 +34,13 @@ export default function Sidebar({ currentView, setCurrentView, onLogout, toggleM
             MS
           </div>
           <div>
-            <div className="text-xs font-bold text-slate-800 dark:text-white transition-colors">Dra. Mariana S.</div>
+            <div className="text-xs font-bold text-slate-800 dark:text-white transition-colors">{physioName || 'Dra. Mariana S.'}</div>
             <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono transition-colors">CREFITO 48291-F</div>
+            {turno && (
+              <div className="text-[10px] text-clinical-600 dark:text-clinical-400 font-semibold mt-0.5 transition-colors">
+                <i className="fa-regular fa-clock"></i> Turno: {turno}
+              </div>
+            )}
           </div>
         </div>
 

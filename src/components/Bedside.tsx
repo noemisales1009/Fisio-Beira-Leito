@@ -392,7 +392,7 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
 
   return (
     <div className="p-6 space-y-4 max-w-2xl mx-auto">
-      <button onClick={onBack} className="flex items-center gap-2 text-xs text-slate-500 hover:text-clinical-500 dark:text-slate-400 dark:hover:text-clinical-400 transition-colors">
+      <button onClick={onBack} className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-clinical-600 dark:hover:text-clinical-400 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-clinical-300 dark:hover:border-clinical-500/40 px-3 py-2 rounded-xl shadow-sm transition-colors">
         <i className="fa-solid fa-arrow-left"></i> Voltar à lista
       </button>
 
@@ -420,6 +420,8 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
           <FieldBox label="Mãe"   value={patient.mae} span2/>
           <FieldBox label="Peso"  value={`${patient.pesoKg} kg`}/>
           <FieldBox label="Altura" value={`${patient.altCm} cm`}/>
+          <FieldBox label="Saturação Alvo" value={`${patient.satAlvoMin}–${patient.satAlvoMax}%`}/>
+          <FieldBox label="Volume Corrente Alvo" value={`${patient.volCorrenteAlvo} mL`}/>
           <div className="col-span-2 bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-xl p-3">
             <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Internação</span>
             <span className="text-sm font-semibold text-slate-800 dark:text-white">
@@ -635,6 +637,7 @@ export default function Bedside() {
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
                   {calcIdade(p.nasc)}
                   {ativo && <span className="hidden sm:inline"> · <i className="fa-solid fa-lungs text-clinical-500 dark:text-clinical-400 mx-0.5"></i>{ativo.device} <span className="text-slate-400 dark:text-slate-500">({calcDuracao(ativo.inicio)})</span></span>}
+                  <span className="hidden md:inline text-slate-400 dark:text-slate-500"> · Alvo SpO₂ {p.satAlvoMin}–{p.satAlvoMax}% · VC {p.volCorrenteAlvo}mL</span>
                 </p>
                 <div className="flex items-center gap-2 mt-1.5">
                   {p.contato && <span className="text-[10px] font-bold bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-700/40 px-2 py-0.5 rounded-full"><i className="fa-solid fa-shield-virus mr-1"></i>Contato</span>}
