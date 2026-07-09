@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   PieChart, Pie, Tooltip, ResponsiveContainer,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Legend,
@@ -114,7 +114,27 @@ export default function Dashboard({ setCurrentView, turno, physioName }: any) {
     { name: 'Vagos',    value: vacant,    fill: '#10b981' },
   ];
 
-  const [equipNoteVisible, setEquipNoteVisible] = useState(false);
+  /* ── Registro do plantão — persistido no navegador por dia/turno ── */
+  const REG_KEY = 'fisio_registro_plantao';
+  const hojeKey = new Date().toISOString().slice(0, 10);
+  const [reg, setReg] = useState({ equip: 'N', equipNota: '', identificacao: '', registroO2: '', semVM: false, celulasO2: false });
+  const [regSalvoEm, setRegSalvoEm] = useState<string | null>(null);
+  const setR = (k: string, v: string | boolean) => setReg(r => ({ ...r, [k]: v }));
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(REG_KEY) || 'null');
+      if (saved && saved.date === hojeKey && saved.turno === turno) {
+        setReg(saved.reg);
+        setRegSalvoEm(saved.salvoEm || null);
+      }
+    } catch { /* registro corrompido — ignora */ }
+  }, [turno]);
+  const salvarRegistro = () => {
+    const salvoEm = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    localStorage.setItem(REG_KEY, JSON.stringify({ date: hojeKey, turno, reg, salvoEm }));
+    setRegSalvoEm(salvoEm);
+  };
+
   const [activeVent, setActiveVent] = useState<number | null>(null);
   const [activeBed, setActiveBed]   = useState<number | null>(null);
   const ventItems = buildInitVent(PATIENTS);
@@ -148,7 +168,7 @@ export default function Dashboard({ setCurrentView, turno, physioName }: any) {
       const ROSE_300: [number, number, number] = [253, 164, 175];
       const ROSE_700: [number, number, number] = [190, 18, 60];
 
-      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const margin = 40;
@@ -199,8 +219,9 @@ export default function Dashboard({ setCurrentView, turno, physioName }: any) {
         }
       };
 
-      const sectionTitle = (title: string) => {
-        ensureSpace(24);
+      // minSpace: altura mínima estimada do bloco para não órfãos de título/cabeçalho no fim da página
+      const sectionTitle = (title: string, minSpace = 24) => {
+        ensureSpace(minSpace);
         pdf.setTextColor(...CLINICAL_700);
         pdf.setFont('helvetica', 'bold');
         pdf.setFontSize(11);
@@ -225,6 +246,12 @@ export default function Dashboard({ setCurrentView, turno, physioName }: any) {
 
       // fontes padrão do PDF não têm glyph para dígitos subscritos (ex.: "O₂")
       const pdfSafe = (str: string) => str.replace(/[₀₁₂₃₄₅₆₇₈₉]/g, (c) => String('₀₁₂₃₄₅₆₇₈₉'.indexOf(c)));
+
+      // sigilo: relatório identifica o paciente apenas pelo 1º nome
+      const firstName = (nome: string) => {
+        const f = nome.trim().split(/\s+/)[0] || '';
+        return f.charAt(0) + f.slice(1).toLowerCase();
+      };
 
       const hexToRgb = (hex: string): [number, number, number] => {
         const n = parseInt(hex.replace('#', ''), 16);
@@ -405,8 +432,21 @@ export default function Dashboard({ setCurrentView, turno, physioName }: any) {
         cursorY += 36 + 22;
       }
 
-      // 2. Cenário ventilatório geral
-      sectionTitle('Cenário Ventilatório Geral');
+      // 2. Pacientes do turno — fisioterapeuta responsável por paciente
+      sectionTitle('Pacientes do Turno — Fisioterapeuta Responsável', 120);
+      baseTable(
+        [['Leito', 'Paciente', 'Suporte Ventilatório', 'Fisioterapeuta Responsável']],
+        PATIENTS.map(p => [
+          p.id,
+          firstName(p.nome),
+          pdfSafe(SUPORTE_TO_VENT[p.suporte] || p.suporte),
+          p.fisioResponsavel,
+        ]),
+        { columnStyles: { 0: { halign: 'center', cellWidth: 50 } } },
+      );
+
+      // 3. Cenário ventilatório geral
+      sectionTitle('Cenário Ventilatório Geral', 300);
       baseTable(
         [['Modalidade', 'Nº Pacientes']],
         ventItems.map(it => [pdfSafe(it.label), it.val]),
@@ -414,19 +454,20 @@ export default function Dashboard({ setCurrentView, turno, physioName }: any) {
           columnStyles: { 1: { halign: 'center', cellWidth: 90 } },
           foot: [['Total Mapeados', totalMapeados]],
           footStyles: { fillColor: SLATE_100, textColor: SLATE_800, fontStyle: 'bold', fontSize: 9 },
+          showFoot: 'lastPage',
         },
       );
 
-      // 3. Suporte ventilatório (distribuição) — gráfico de rosca
-      sectionTitle('Suporte Ventilatório — Distribuição por Modalidade');
+      // 4. Suporte ventilatório (distribuição) — gráfico de rosca
+      sectionTitle('Suporte Ventilatório — Distribuição por Modalidade', 200);
       drawDonutWithLegend(ventWithPct, 'pacientes');
 
-      // 4. Ocupação de leitos — gráfico de rosca
-      sectionTitle('Ocupação de Leitos');
+      // 5. Ocupação de leitos — gráfico de rosca
+      sectionTitle('Ocupação de Leitos', 200);
       drawDonutWithLegend(bedWithPct.map(d => ({ ...d, pct: d.pct })), 'leitos');
 
-      // 5. Tendência semanal — gráfico de barras
-      sectionTitle('Tendência Semanal — Últimos 7 Dias');
+      // 6. Tendência semanal — gráfico de barras
+      sectionTitle('Tendência Semanal — Últimos 7 Dias', 220);
       drawWeeklyBarChart();
 
       const totalPages = pdf.getNumberOfPages();
@@ -679,14 +720,17 @@ export default function Dashboard({ setCurrentView, turno, physioName }: any) {
           </div>
           <div className="space-y-2">
             <select
-              onChange={(e) => setEquipNoteVisible(e.target.value === 'S')}
+              value={reg.equip}
+              onChange={(e) => setR('equip', e.target.value)}
               className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-xl p-3 focus:outline-none focus:border-clinical-500 text-slate-800 dark:text-white font-semibold transition-colors cursor-pointer"
             >
               <option value="N">Não, todos os equipamentos normais</option>
               <option value="S">Sim, relatar problema/pane</option>
             </select>
-            {equipNoteVisible && (
+            {reg.equip === 'S' && (
               <textarea
+                value={reg.equipNota}
+                onChange={(e) => setR('equipNota', e.target.value)}
                 placeholder="Descreva o equipamento e o defeito..."
                 className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-xl p-3 h-20 text-slate-800 dark:text-white focus:outline-none focus:border-clinical-500 resize-none transition-colors"
               />
@@ -699,14 +743,26 @@ export default function Dashboard({ setCurrentView, turno, physioName }: any) {
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Nº Leitos s/ VM e V.R. Pressão O₂</h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed mb-4">Registro técnico obrigatório — leitos sem VM e rede O₂.</p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold block mb-1">Identificação</label>
-              <input type="text" placeholder="Ex: Leito 02 e 07" className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-xl p-3 text-slate-800 dark:text-white font-semibold focus:outline-none focus:border-clinical-500 transition-colors" />
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold block mb-1">Identificação</label>
+                <input type="text" value={reg.identificacao} onChange={(e) => setR('identificacao', e.target.value)} placeholder="Ex: Leito 02 e 07" className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-xl p-3 text-slate-800 dark:text-white font-semibold focus:outline-none focus:border-clinical-500 transition-colors" />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold block mb-1">Registro O₂</label>
+                <input type="text" value={reg.registroO2} onChange={(e) => setR('registroO2', e.target.value)} placeholder="Ex: 2002" className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-xl p-3 text-slate-800 dark:text-white font-mono font-bold focus:outline-none focus:border-clinical-500 transition-colors" />
+              </div>
             </div>
-            <div>
-              <label className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold block mb-1">Registro O₂</label>
-              <input type="text" placeholder="Ex: 2002" className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-xl p-3 text-slate-800 dark:text-white font-mono font-bold focus:outline-none focus:border-clinical-500 transition-colors" />
+            <div className="flex flex-col gap-1.5">
+              <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer">
+                <input type="checkbox" checked={reg.semVM} onChange={(e) => setR('semVM', e.target.checked)} className="accent-clinical-500 rounded" />
+                <span className="font-semibold">Leitos sem VM conferidos</span>
+              </label>
+              <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer">
+                <input type="checkbox" checked={reg.celulasO2} onChange={(e) => setR('celulasO2', e.target.checked)} className="accent-clinical-500 rounded" />
+                <span className="font-semibold">Células de O₂ / ar comprimido conferidas</span>
+              </label>
             </div>
           </div>
         </div>
@@ -739,6 +795,21 @@ export default function Dashboard({ setCurrentView, turno, physioName }: any) {
             </div>
           )}
         </div>
+      </div>
+
+      {/* ── Salvar registro do plantão ── */}
+      <div className="flex items-center justify-end gap-3 flex-wrap">
+        {regSalvoEm && (
+          <span className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
+            <i className="fa-solid fa-circle-check mr-1"></i> Registro do plantão salvo às {regSalvoEm}
+          </span>
+        )}
+        <button
+          onClick={salvarRegistro}
+          className="flex items-center gap-2 text-xs font-bold bg-clinical-500 hover:bg-clinical-600 text-white px-4 py-2.5 rounded-xl shadow-sm transition"
+        >
+          <i className="fa-solid fa-floppy-disk"></i> Salvar Registro do Plantão
+        </button>
       </div>
     </section>
   );

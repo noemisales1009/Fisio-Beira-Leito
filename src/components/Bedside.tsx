@@ -1,12 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import {
-  Status, GasEntry, DeviceEntry, Patient,
+  Status, Sexo, GasEntry, DeviceEntry, Patient,
   calcIdade, calcDias, calcDuracao, fromInputDate,
-  PATIENTS,
+  PATIENTS, admitPatient, dischargePatient, nextFreeBed,
 } from '../patients';
 
 /* ─── STATUS / BORDERS ───────────────────────────────── */
@@ -25,24 +25,48 @@ const DEVICE_OPTIONS = [
   'Pronação','NOI (Óxido Nítrico)',
 ];
 
+/* ─── SUPORTE VENTILATÓRIO ATUAL — parâmetros obrigatórios por suporte ── */
+interface ParamField { key:string; label:string; type?:'select'; opts?:string[]; optional?:boolean }
+const F = (key:string,label:string,optional=false):ParamField => ({key,label,optional});
+
+const VM_MODO_OPTS       = ['Assistido/Controlado','Espontâneo (PSV)'];
+const VM_MODALIDADE_OPTS = ['Pressão Controlada','Volume Controlado','PRVC'];
+const VM_PARAMS: Record<string,ParamField[]> = {
+  'Pressão Controlada': [F('fio2','FiO₂ (%)'),F('peep','PEEP'),F('pip','PIP'),F('fr','FR'),F('ti','Ti'),F('sens','Sensibilidade'),F('ie','Relação I:E'),F('rampa','Rampa')],
+  'Volume Controlado':  [F('fio2','FiO₂ (%)'),F('vc','VC'),F('fr','FR'),F('peep','PEEP'),F('fluxo','Fluxo Insp.'),F('pausa','Pausa Insp.'),F('ie','Relação I:E'),F('sens','Sensibilidade')],
+  'PRVC':               [F('fio2','FiO₂ (%)'),F('vca','VC Alvo'),F('fr','FR'),F('peep','PEEP'),F('ti','Ti'),F('sens','Sensibilidade'),F('rampa','Rampa'),F('pip','PIP máx')],
+  'Espontâneo (PSV)':   [F('fio2','FiO₂ (%)'),F('ps','P. Suporte'),F('peep','PEEP'),F('sens','Sensibilidade'),F('bkpi','Backup: Pi'),F('bkfr','Backup: FR'),F('bkti','Backup: Ti')],
+};
+// monitorização comum a todos os modos de VM — MAP obrigatória (entra no cálculo do IO)
+const VM_COMUNS: ParamField[] = [F('map','MAP'),F('drive','Drive Pressure',true),F('volmin','Vol. Minuto',true),F('vce','VC Expirado',true)];
+// via aérea artificial (VM por TOT ou TQT): nº do tubo/cânula e pressão de cuff obrigatórios
+const VIA_AEREA: ParamField[] = [F('numTot','Nº TOT / Cânula'),F('cl','CL (cm)',true),F('cuff','Pressão de Cuff')];
+
+const SUPORTE_PARAMS: Record<string,ParamField[]> = {
+  'Ar Ambiente': [],
+  'Cateter Nasal': [F('litros','Litros (L/min)')],
+  'Máscara Comum': [F('fluxo','Fluxo (L/min)')],
+  'Máscara Venturi': [F('fluxo','Fluxo (L/min)'),F('fio2','FiO₂ (%)')],
+  'CNAF': [F('fluxo','Fluxo (L/min)'),F('fio2','FiO₂ (%)'),F('temp','Temperatura (°C)')],
+  'VNI': [{key:'modalidade',label:'Modalidade',type:'select',opts:['CPAP','Bilevel']},F('interface','Interface'),F('fio2','FiO₂ (%)'),F('epap','EPAP'),F('ipap','IPAP',true)],
+  'TQT em Ar Amb.': [],
+  'TQT em O₂': [F('litros','Litros (L/min)')],
+  'TOT em VM': [],
+  'TQT em VM': [],
+  'Pronação': [{key:'protocolo',label:'Protocolo',type:'select',opts:['18×6','20×4']}],
+  'NOI (Óxido Nítrico)': [F('dose','Dose (ppm)')],
+};
+const isVM = (s:string) => s === 'TOT em VM' || s === 'TQT em VM';
+
+const SUPORTE_STATUS_OPTS = ['Mantido','Em desmame','Suspenso'];
+const INSTABILIDADES = ['Taquipneia','Bradipneia','Apneia','Bradicardia','Hipotermia mantida'];
+
 /* ─── FIELD BOX (reutilizável) ───────────────────────── */
 function FieldBox({label,value,span2}:{label:string;value:string;span2?:boolean}) {
   return (
     <div className={`bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-xl p-3 ${span2?'col-span-2':''}`}>
       <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">{label}</span>
       <span className="text-sm font-semibold text-slate-800 dark:text-white">{value}</span>
-    </div>
-  );
-}
-
-/* ─── VITAL BOX ──────────────────────────────────────── */
-function VitalBox({label,value,alert}:{label:string;value:string;alert?:boolean}) {
-  return (
-    <div className={`flex flex-col items-center p-3 rounded-xl border ${alert
-      ?'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-700/40'
-      :'bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800'}`}>
-      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">{label}</span>
-      <span className={`text-lg font-extrabold font-mono ${alert?'text-rose-600 dark:text-rose-400':'text-slate-800 dark:text-white'}`}>{value}</span>
     </div>
   );
 }
@@ -80,14 +104,16 @@ function GasTooltip({active,payload,label}:any) {
 /* ─── GASOMETRIA PANEL ───────────────────────────────── */
 function GasometriaPanel({patient}:{patient:Patient}) {
   const [entries,setEntries] = useState<GasEntry[]>(patient.gas);
-  const [form,setForm] = useState({data:'',hora:'',ph:'',paco2:'',pao2:'',hco3:'',be:'',fio2:''});
+  const [form,setForm] = useState({data:'',hora:'',ph:'',paco2:'',pao2:'',hco3:'',be:'',fio2:'',map:''});
   const set = (k:string,v:string) => setForm(f=>({...f,[k]:v}));
   const add = () => {
     const pao2=parseFloat(form.pao2), fio2=parseFloat(form.fio2);
+    const map = form.map ? parseFloat(form.map) : null;
     if (!form.data||!pao2||!fio2) return;
-    const e: GasEntry = {data:form.data,hora:form.hora,ph:parseFloat(form.ph)||0,paco2:parseFloat(form.paco2)||0,pao2,hco3:parseFloat(form.hco3)||0,be:parseFloat(form.be)||0,fio2,pf:+(pao2/fio2).toFixed(0),io:fio2>0.3?+(fio2*100*7.5/pao2).toFixed(1):null};
+    // IO = MAP × FiO₂ × 100 / PaO₂ — calculado apenas quando a MAP é registrada
+    const e: GasEntry = {data:form.data,hora:form.hora,ph:parseFloat(form.ph)||0,paco2:parseFloat(form.paco2)||0,pao2,hco3:parseFloat(form.hco3)||0,be:parseFloat(form.be)||0,fio2,map,pf:+(pao2/fio2).toFixed(0),io:map!=null?+(map*fio2*100/pao2).toFixed(1):null};
     setEntries(p=>[...p,e]);
-    setForm({data:'',hora:'',ph:'',paco2:'',pao2:'',hco3:'',be:'',fio2:''});
+    setForm({data:'',hora:'',ph:'',paco2:'',pao2:'',hco3:'',be:'',fio2:'',map:''});
   };
   const chartData = entries.map(e=>({name:`${e.data} ${e.hora}`,PF:e.pf,IO:e.io}));
 
@@ -115,7 +141,7 @@ function GasometriaPanel({patient}:{patient:Patient}) {
             <SectionLabel icon="fa-table" text="Histórico"/>
             <table className="w-full text-[10px] border-collapse">
               <thead>
-                <tr>{['Data','Hora','pH','PaCO₂','PaO₂','HCO₃','BE','FiO₂','P/F','IO'].map(h=>(
+                <tr>{['Data','Hora','pH','PaCO₂','PaO₂','HCO₃','BE','FiO₂','MAP','P/F','IO'].map(h=>(
                   <th key={h} className="text-left px-2 py-1.5 border-b border-slate-200 dark:border-slate-800 font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">{h}</th>
                 ))}</tr>
               </thead>
@@ -130,6 +156,7 @@ function GasometriaPanel({patient}:{patient:Patient}) {
                     <td className="px-2 py-1.5 font-mono text-slate-700 dark:text-slate-300">{e.hco3}</td>
                     <td className={`px-2 py-1.5 font-mono ${e.be<-3?'text-rose-600 dark:text-rose-400':'text-slate-700 dark:text-slate-300'}`}>{e.be>0?`+${e.be}`:e.be}</td>
                     <td className="px-2 py-1.5 font-mono text-slate-700 dark:text-slate-300">{Math.round(e.fio2*100)}%</td>
+                    <td className="px-2 py-1.5 font-mono text-slate-700 dark:text-slate-300">{e.map??'—'}</td>
                     <td className={`px-2 py-1.5 font-mono font-bold ${e.pf<200?'text-rose-600 dark:text-rose-400':e.pf<300?'text-amber-600 dark:text-amber-400':'text-emerald-600 dark:text-emerald-400'}`}>{e.pf}</td>
                     <td className={`px-2 py-1.5 font-mono ${e.io&&e.io>8?'text-rose-600 dark:text-rose-400':'text-slate-700 dark:text-slate-300'}`}>{e.io??'—'}</td>
                   </tr>
@@ -142,7 +169,7 @@ function GasometriaPanel({patient}:{patient:Patient}) {
       <div>
         <SectionLabel icon="fa-plus-circle" text="Registrar Gasometria"/>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {[{k:'data',label:'Data',type:'date'},{k:'hora',label:'Hora',type:'time'},{k:'ph',label:'pH',type:'number'},{k:'paco2',label:'PaCO₂',type:'number'},{k:'pao2',label:'PaO₂',type:'number'},{k:'hco3',label:'HCO₃',type:'number'},{k:'be',label:'BE',type:'number'},{k:'fio2',label:'FiO₂ (0.21–1.0)',type:'number'}].map(f=>(
+          {[{k:'data',label:'Data',type:'date'},{k:'hora',label:'Hora',type:'time'},{k:'ph',label:'pH',type:'number'},{k:'paco2',label:'PaCO₂',type:'number'},{k:'pao2',label:'PaO₂',type:'number'},{k:'hco3',label:'HCO₃',type:'number'},{k:'be',label:'BE',type:'number'},{k:'fio2',label:'FiO₂ (0.21–1.0)',type:'number'},{k:'map',label:'MAP (cmH₂O)',type:'number'}].map(f=>(
             <div key={f.k}>
               <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">{f.label}</label>
               <input type={f.type} step="any" value={(form as any)[f.k]} onChange={e=>set(f.k,e.target.value)} className={inputCls}/>
@@ -275,9 +302,12 @@ function DispositivosPanel({patient}:{patient:Patient}) {
 function ScoresPanel({patient}:{patient:Patient}) {
   const [activeCalc,setActiveCalc] = useState<string|null>(null);
   const [dfTotal,setDfTotal] = useState(0);
-  const sf=+(patient.spO2/(patient.fio2*100)).toFixed(1), pf=+(patient.pao2/patient.fio2).toFixed(0);
-  const oi=patient.vm?+(patient.fio2*100*7.5/patient.pao2).toFixed(1):null;
-  const osi=+(patient.fio2*100*7.5/patient.spO2).toFixed(1), vcAlvo=+(5*patient.pesoKg).toFixed(0);
+  // fórmulas: P/F = PaO₂/FiO₂ · S/F = SpO₂/FiO₂ · IO = MAP×FiO₂×100/PaO₂ · ISO = MAP×FiO₂×100/SpO₂
+  const sf=+(patient.spO2/patient.fio2).toFixed(0), pf=+(patient.pao2/patient.fio2).toFixed(0);
+  const lastMap = [...patient.gas].reverse().find(g=>g.map!=null)?.map ?? null;
+  const oi  = lastMap!=null ? +(lastMap*patient.fio2*100/patient.pao2).toFixed(1) : null;
+  const osi = lastMap!=null ? +(lastMap*patient.fio2*100/patient.spO2).toFixed(1) : null;
+  const vcAlvo=+(5*patient.pesoKg).toFixed(0);
 
   const badge = () => {
     if (dfTotal===0) return {t:'Sem Alterações',c:'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-700/40'};
@@ -335,9 +365,9 @@ function ScoresPanel({patient}:{patient:Patient}) {
       {activeCalc==='oxigenacao' && (
         <div className="grid grid-cols-2 gap-3">
           {[{l:'P/F',v:pf,a:+pf<200,r:+pf<100?'Grave':+pf<200?'Moderado':+pf<300?'Leve':'Normal'},
-            {l:'S/F',v:sf,a:+sf<200,r:'<264 → P/F<200'},
-            {l:'OSI',v:osi,a:+osi>12,r:'>12 → SARA'},
-            {l:'IO', v:oi??'—',a:oi!==null&&oi>8,r:'Apenas em VM'}].map(item=>(
+            {l:'S/F',v:sf,a:+sf<264,r:'SpO₂/FiO₂ · <264 → P/F<200'},
+            {l:'ISO (OSI)',v:osi??'—',a:osi!==null&&osi>12,r:osi!==null?'MAP×FiO₂×100/SpO₂':'Registrar MAP na gasometria'},
+            {l:'IO', v:oi??'—',a:oi!==null&&oi>8,r:oi!==null?'MAP×FiO₂×100/PaO₂':'Registrar MAP na gasometria'}].map(item=>(
             <div key={item.l} className={`p-4 rounded-xl border ${item.a?'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-700/40':'bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800'}`}>
               <span className="text-[9px] font-bold uppercase text-slate-400 dark:text-slate-500 tracking-widest block mb-1">{item.l}</span>
               <span className={`text-2xl font-extrabold font-mono ${item.a?'text-rose-600 dark:text-rose-400':'text-slate-800 dark:text-white'}`}>{item.v}</span>
@@ -371,14 +401,120 @@ function ScoresPanel({patient}:{patient:Patient}) {
 }
 
 /* ─── PATIENT DETAIL ─────────────────────────────────── */
-function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
+type TurnoKey = 'M'|'T'|'N';
+const VITAL_VAZIO = {spO2:'',fc:'',fr:'',pas:'',pad:'',temp:''};
+
+function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>void;onDischarge:()=>void}) {
   const [tab,setTab] = useState<'fisio'|'dispositivos'|'gas'|'scores'|'evolucao'>('fisio');
   const [equipProblema,setEquipProblema] = useState(false);
   const [nivel,setNivel] = useState(1);
+  const [,refresh] = useState(0);
   const s  = STATUS_STYLE[patient.status];
   const dias = calcDias(patient.data_internacao);
 
-  const ALERTAS = ['Instabilidade hemodinâmica','Risco de extubação acidental','Agitação / sedação inadequada','Restrição de decúbito','Drenos / cateteres em uso','Precaução de contato','Broncoespasmo reativo','Hipertensão pulmonar','Pós-operatório imediato','Convulsões recentes'];
+  /* ── Cabeçalho editável ── */
+  const [editHeader,setEditHeader] = useState(false);
+  const [hdr,setHdr] = useState({
+    nome:patient.nome, mae:patient.mae, pesoKg:String(patient.pesoKg), altCm:String(patient.altCm),
+    satAlvoMin:String(patient.satAlvoMin), satAlvoMax:String(patient.satAlvoMax),
+    volCorrenteAlvo:String(patient.volCorrenteAlvo), fisioResponsavel:patient.fisioResponsavel,
+  });
+  const setH = (k:string,v:string) => setHdr(h=>({...h,[k]:v}));
+  const salvarHeader = () => {
+    Object.assign(patient, {
+      nome: hdr.nome.trim().toUpperCase() || patient.nome,
+      mae: hdr.mae.trim().toUpperCase(),
+      pesoKg: parseFloat(hdr.pesoKg) || patient.pesoKg,
+      altCm: parseFloat(hdr.altCm) || patient.altCm,
+      satAlvoMin: parseInt(hdr.satAlvoMin) || patient.satAlvoMin,
+      satAlvoMax: parseInt(hdr.satAlvoMax) || patient.satAlvoMax,
+      volCorrenteAlvo: parseInt(hdr.volCorrenteAlvo) || patient.volCorrenteAlvo,
+      fisioResponsavel: hdr.fisioResponsavel.trim() || patient.fisioResponsavel,
+    });
+    setEditHeader(false); refresh(n=>n+1);
+  };
+
+  /* ── Sinais vitais por turno (M/T/N) ── */
+  const [turnoVital,setTurnoVital] = useState<TurnoKey>('M');
+  const [vitais,setVitais] = useState<Record<TurnoKey,typeof VITAL_VAZIO>>({
+    M:{spO2:String(patient.spO2),fc:String(patient.fc),fr:patient.vm?'':String(patient.fr),pas:String(patient.pas),pad:String(patient.pad),temp:String(patient.temp)},
+    T:{...VITAL_VAZIO}, N:{...VITAL_VAZIO},
+  });
+  const [instab,setInstab] = useState<Record<TurnoKey,string[]>>({M:[],T:[],N:[]});
+  const setVital = (k:string,v:string) => setVitais(vs=>({...vs,[turnoVital]:{...vs[turnoVital],[k]:v}}));
+  const toggleInstab = (a:string) => setInstab(m=>({
+    ...m,[turnoVital]: m[turnoVital].includes(a) ? m[turnoVital].filter(x=>x!==a) : [...m[turnoVital],a],
+  }));
+
+  /* cronômetro de 60s — o campo FR só libera junto com a contagem */
+  const [frSeg,setFrSeg] = useState<number|null>(null);
+  const [frLiberado,setFrLiberado] = useState<Record<TurnoKey,boolean>>({M:false,T:false,N:false});
+  useEffect(() => {
+    if (frSeg === null || frSeg <= 0) return;
+    const t = setTimeout(() => setFrSeg(sg => (sg ?? 1) - 1), 1000);
+    return () => clearTimeout(t);
+  }, [frSeg]);
+  const iniciarFR = () => { setFrLiberado(l=>({...l,[turnoVital]:true})); setFrSeg(60); };
+
+  /* ── Suporte Ventilatório Atual ── */
+  const [suporte,setSuporte] = useState(patient.suporte);
+  const [vmModo,setVmModo] = useState('');
+  const [vmModalidade,setVmModalidade] = useState('');
+  const [ventParams,setVentParams] = useState<Record<string,string>>({});
+  const [suporteStatus,setSuporteStatus] = useState('Mantido');
+  const [progExtub,setProgExtub] = useState(false);
+  const [progExtubData,setProgExtubData] = useState('');
+  const trocarSuporte = (v:string) => { setSuporte(v); setVmModo(''); setVmModalidade(''); setVentParams({}); };
+  const setParam = (k:string,v:string) => setVentParams(p=>({...p,[k]:v}));
+  const modalidadeAtiva = vmModo==='Espontâneo (PSV)' ? 'Espontâneo (PSV)' : vmModalidade;
+
+  /* ── Alertas + restrição de decúbito ── */
+  const [alertasSel,setAlertasSel] = useState<string[]>([]);
+  const [decubLado,setDecubLado] = useState('');
+  const [decubJust,setDecubJust] = useState('');
+  const toggleAlerta = (a:string) => setAlertasSel(sel=>sel.includes(a)?sel.filter(x=>x!==a):[...sel,a]);
+  const restricaoDecub = alertasSel.includes('Restrição de decúbito');
+
+  /* ── Validação da ficha ── */
+  const [erros,setErros] = useState<string[]>([]);
+  const [salvo,setSalvo] = useState(false);
+  const validarFicha = (): string[] => {
+    const faltas: string[] = [];
+    const exigir = (fields: ParamField[]) => fields.forEach(f=>{
+      if (!f.optional && !ventParams[f.key]?.trim()) faltas.push(f.label);
+    });
+    if (isVM(suporte)) {
+      if (!vmModo) faltas.push('Modo (Assistido/Controlado ou Espontâneo)');
+      if (vmModo==='Assistido/Controlado' && !vmModalidade) faltas.push('Modalidade (PC / VC / PRVC)');
+      if (modalidadeAtiva) exigir(VM_PARAMS[modalidadeAtiva] ?? []);
+      exigir(VM_COMUNS);
+      exigir(VIA_AEREA);
+    } else {
+      exigir(SUPORTE_PARAMS[suporte] ?? []);
+      if (suporte==='VNI' && ventParams['modalidade']==='Bilevel' && !ventParams['ipap']?.trim()) faltas.push('IPAP (obrigatório no Bilevel)');
+    }
+    if (progExtub && !progExtubData) faltas.push('Data programada da extubação');
+    if (restricaoDecub && (!decubLado || !decubJust.trim())) faltas.push('Restrição de decúbito: lado e justificativa');
+    return faltas;
+  };
+  const salvarFicha = () => {
+    const faltas = validarFicha();
+    setErros(faltas);
+    if (faltas.length) { setSalvo(false); return; }
+    patient.suporte = suporte;
+    patient.vm = isVM(suporte);
+    setSalvo(true);
+    setTimeout(()=>setSalvo(false), 4000);
+  };
+
+  /* ── Resumo das últimas 24h ── */
+  const parseBr = (str:string) => { const [d,m,a]=str.split('/').map(Number); return new Date(a,m-1,d).getTime(); };
+  const marco24h = Date.now() - 86400000;
+  const dispositivoAtivo = patient.dispositivos.find(d=>!d.retirada);
+  const mudancas24h = patient.dispositivos.filter(d => parseBr(d.inicio) >= marco24h || (d.retirada && parseBr(d.retirada) >= marco24h));
+  const ultimaGas = patient.gas[patient.gas.length-1];
+
+  const ALERTAS = ['Instabilidade ventilatória','Instabilidade hemodinâmica','Dreno de tórax','Neuroproteção','Risco de extubação acidental','Agitação / sedação inadequada','Restrição de decúbito','Broncoespasmo reativo','Hipertensão pulmonar','Pós-operatório imediato','Convulsões recentes'];
   const NIVEIS  = [{n:1,label:'Acamado passivo'},{n:2,label:'Mov. no leito (assistido)'},{n:3,label:'Sentado na beira do leito'},{n:4,label:'Em pé com suporte'},{n:5,label:'Deambula com auxílio'},{n:6,label:'Deambula independente'}];
   const TABS = [
     {key:'fisio',        icon:'fa-person-walking', label:'Fisioterapia'},
@@ -392,9 +528,16 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
 
   return (
     <div className="p-6 space-y-4 max-w-2xl mx-auto">
-      <button onClick={onBack} className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-clinical-600 dark:hover:text-clinical-400 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-clinical-300 dark:hover:border-clinical-500/40 px-3 py-2 rounded-xl shadow-sm transition-colors">
-        <i className="fa-solid fa-arrow-left"></i> Voltar à lista
-      </button>
+      <div className="flex items-center justify-between gap-2">
+        <button onClick={onBack} className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-clinical-600 dark:hover:text-clinical-400 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-clinical-300 dark:hover:border-clinical-500/40 px-3 py-2 rounded-xl shadow-sm transition-colors">
+          <i className="fa-solid fa-arrow-left"></i> Voltar à lista
+        </button>
+        <button
+          onClick={()=>{ if (window.confirm(`Confirmar alta de ${patient.nome}? O paciente será removido do painel.`)) onDischarge(); }}
+          className="flex items-center gap-2 text-xs font-semibold text-rose-600 dark:text-rose-400 bg-white dark:bg-slate-950 border border-rose-200 dark:border-rose-700/40 hover:bg-rose-50 dark:hover:bg-rose-950/30 px-3 py-2 rounded-xl shadow-sm transition-colors">
+          <i className="fa-solid fa-person-walking-arrow-right"></i> Dar Alta / Arquivar
+        </button>
+      </div>
 
       {/* Card do paciente */}
       <div className={`${card} p-5`}>
@@ -411,9 +554,36 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
               </p>
             </div>
           </div>
-          <button className="text-slate-400 hover:text-clinical-500 transition-colors p-1"><i className="fa-solid fa-pen text-sm"></i></button>
+          <button onClick={()=>setEditHeader(e=>!e)} title={editHeader?'Cancelar edição':'Editar cabeçalho'}
+            className={`transition-colors p-1 ${editHeader?'text-clinical-500':'text-slate-400 hover:text-clinical-500'}`}>
+            <i className={`fa-solid ${editHeader?'fa-xmark':'fa-pen'} text-sm`}></i>
+          </button>
         </div>
 
+        {editHeader ? (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                {k:'nome',label:'Nome Completo',span2:true},
+                {k:'mae',label:'Mãe',span2:true},
+                {k:'pesoKg',label:'Peso (kg)'},
+                {k:'altCm',label:'Altura (cm)'},
+                {k:'satAlvoMin',label:'Sat. Alvo Mín (%)'},
+                {k:'satAlvoMax',label:'Sat. Alvo Máx (%)'},
+                {k:'volCorrenteAlvo',label:'Vol. Corrente Alvo (mL)'},
+                {k:'fisioResponsavel',label:'Fisioterapeuta Responsável'},
+              ].map(f=>(
+                <div key={f.k} className={f.span2?'col-span-2':''}>
+                  <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">{f.label}</label>
+                  <input type="text" value={(hdr as any)[f.k]} onChange={e=>setH(f.k,e.target.value)} className={inputCls}/>
+                </div>
+              ))}
+            </div>
+            <button onClick={salvarHeader} className="w-full bg-clinical-500 hover:bg-clinical-600 text-white font-bold py-2.5 rounded-xl text-xs transition flex items-center justify-center gap-2">
+              <i className="fa-solid fa-check"></i> Salvar Cabeçalho
+            </button>
+          </div>
+        ) : (
         <div className="grid grid-cols-2 gap-2">
           <FieldBox label="Idade" value={calcIdade(patient.nasc)}/>
           <FieldBox label="Sexo"  value={`${patient.sexo==='Masculino'?'♂':'♀'} ${patient.sexo}`}/>
@@ -422,6 +592,7 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
           <FieldBox label="Altura" value={`${patient.altCm} cm`}/>
           <FieldBox label="Saturação Alvo" value={`${patient.satAlvoMin}–${patient.satAlvoMax}%`}/>
           <FieldBox label="Volume Corrente Alvo" value={`${patient.volCorrenteAlvo} mL`}/>
+          <FieldBox label="Fisioterapeuta Responsável" value={patient.fisioResponsavel} span2/>
           <div className="col-span-2 bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-xl p-3">
             <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Internação</span>
             <span className="text-sm font-semibold text-slate-800 dark:text-white">
@@ -432,6 +603,7 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
             </span>
           </div>
         </div>
+        )}
 
         <div className="flex flex-wrap gap-2 mt-3">
           <span className={`flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full ${s.bg} ${s.text}`}>
@@ -445,18 +617,85 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
         </div>
       </div>
 
-      {/* Sinais Vitais */}
+      {/* Sinais Vitais — editáveis por turno M/T/N */}
       <div className={`${card} p-5`}>
-        <h3 className="text-xs font-bold uppercase tracking-wider text-clinical-600 dark:text-clinical-400 flex items-center gap-2 mb-3">
-          <i className="fa-solid fa-heart-pulse"></i> Sinais Vitais
-        </h3>
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-clinical-600 dark:text-clinical-400 flex items-center gap-2">
+            <i className="fa-solid fa-heart-pulse"></i> Sinais Vitais
+          </h3>
+          <div className="flex gap-1">
+            {(['M','T','N'] as TurnoKey[]).map(t=>(
+              <button key={t} onClick={()=>setTurnoVital(t)}
+                className={`w-9 h-8 rounded-lg text-xs font-bold transition ${turnoVital===t
+                  ?'bg-clinical-500 text-white shadow-md shadow-clinical-500/30'
+                  :'bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-800 hover:border-clinical-400'}`}>
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-          <VitalBox label="SpO₂" value={`${patient.spO2}%`}           alert={patient.spO2<94}/>
-          <VitalBox label="FC"   value={`${patient.fc}`}               alert={patient.fc>170}/>
-          <VitalBox label="FR"   value={patient.vm?'—':`${patient.fr}`} alert={!patient.vm&&patient.fr>50}/>
-          <VitalBox label="PAS"  value={`${patient.pas}`}              alert={patient.pas<80}/>
-          <VitalBox label="PAD"  value={`${patient.pad}`}/>
-          <VitalBox label="Temp" value={`${patient.temp}°`}            alert={patient.temp>=38.0}/>
+          {[
+            {k:'spO2',label:'SpO₂ (%)', alerta:(v:number)=>v>0&&v<94},
+            {k:'fc',  label:'FC',        alerta:(v:number)=>v>170},
+            {k:'fr',  label:'FR',        alerta:(v:number)=>v>50},
+            {k:'pas', label:'PAS',       alerta:(v:number)=>v>0&&v<80},
+            {k:'pad', label:'PAD',       alerta:()=>false},
+            {k:'temp',label:'Temp (°C)', alerta:(v:number)=>v>=38},
+          ].map(f=>{
+            const val = (vitais[turnoVital] as any)[f.k] as string;
+            const emAlerta = val!=='' && f.alerta(parseFloat(val));
+            const isFR = f.k==='fr';
+            const frBloqueado = isFR && !frLiberado[turnoVital];
+            return (
+              <div key={f.k} className={`flex flex-col p-2.5 rounded-xl border ${emAlerta
+                ?'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-700/40'
+                :'bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800'}`}>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1 text-center">{f.label}</span>
+                <input
+                  type="number" step="any" value={val}
+                  onChange={e=>setVital(f.k,e.target.value)}
+                  onFocus={isFR&&frBloqueado?iniciarFR:undefined}
+                  readOnly={frBloqueado}
+                  placeholder={frBloqueado?'60s':'—'}
+                  title={frBloqueado?'Clique para iniciar o cronômetro de 60s e contar a FR':undefined}
+                  className={`w-full text-center text-base font-extrabold font-mono bg-transparent focus:outline-none ${emAlerta?'text-rose-600 dark:text-rose-400':'text-slate-800 dark:text-white'} ${frBloqueado?'cursor-pointer':''}`}
+                />
+                {isFR && frSeg!==null && (
+                  <span className={`text-[9px] font-bold text-center mt-0.5 ${frSeg>0?'text-clinical-600 dark:text-clinical-400 animate-pulse':'text-emerald-600 dark:text-emerald-400'}`}>
+                    {frSeg>0?`⏱ ${frSeg}s`:'✓ 60s concluídos'}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Alerta manual de instabilidade */}
+        <div className="mt-3 border-t border-slate-100 dark:border-slate-800 pt-3">
+          <SectionLabel icon="fa-triangle-exclamation" text={`Sinalizar Instabilidade — Turno ${turnoVital}`} color="text-rose-500 dark:text-rose-400"/>
+          <div className="flex flex-wrap gap-1.5">
+            {INSTABILIDADES.map(a=>{
+              const on = instab[turnoVital].includes(a);
+              return (
+                <button key={a} onClick={()=>toggleInstab(a)}
+                  className={`text-[10px] font-bold px-2.5 py-1 rounded-full border transition ${on
+                    ?'bg-rose-500 text-white border-rose-500 shadow-sm'
+                    :'bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:border-rose-300'}`}>
+                  {a}
+                </button>
+              );
+            })}
+          </div>
+          {instab[turnoVital].length>0 && (
+            <div className="mt-2 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-700/40 rounded-xl p-2.5 flex items-center gap-2">
+              <i className="fa-solid fa-triangle-exclamation text-rose-500 text-sm"></i>
+              <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400">
+                Instabilidade sinalizada ({turnoVital}): {instab[turnoVital].join(', ')}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -464,6 +703,39 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
       <div className={`${card} p-4`}>
         <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Diagnóstico</span>
         <p className="text-sm font-semibold text-slate-800 dark:text-white">{patient.diagnostico}</p>
+      </div>
+
+      {/* Resumo das últimas 24h de intervenção ventilatória */}
+      <div className={`${card} p-4`}>
+        <SectionLabel icon="fa-clock-rotate-left" text="Últimas 24h — Intervenção Ventilatória" color="text-clinical-600 dark:text-clinical-400"/>
+        <ul className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300">
+          {dispositivoAtivo && (
+            <li className="flex items-start gap-2">
+              <i className="fa-solid fa-lungs text-clinical-500 mt-0.5"></i>
+              <span>Suporte atual: <strong>{dispositivoAtivo.device}</strong> — em uso há <strong>{calcDuracao(dispositivoAtivo.inicio)}</strong> (desde {dispositivoAtivo.inicio})</span>
+            </li>
+          )}
+          {mudancas24h.length>0 ? mudancas24h.map(d=>(
+            <li key={d.id} className="flex items-start gap-2">
+              <i className="fa-solid fa-arrows-rotate text-amber-500 mt-0.5"></i>
+              <span>{d.retirada
+                ? <>Retirado <strong>{d.device}</strong> em {d.retirada}</>
+                : <>Iniciado <strong>{d.device}</strong> em {d.inicio}</>}
+              </span>
+            </li>
+          )) : (
+            <li className="flex items-start gap-2">
+              <i className="fa-solid fa-circle-check text-emerald-500 mt-0.5"></i>
+              <span>Sem mudança de suporte nas últimas 24 horas.</span>
+            </li>
+          )}
+          {ultimaGas && (
+            <li className="flex items-start gap-2">
+              <i className="fa-solid fa-flask text-violet-500 mt-0.5"></i>
+              <span>Última gasometria ({ultimaGas.data} {ultimaGas.hora}): P/F <strong>{ultimaGas.pf}</strong>{ultimaGas.io!=null && <> · IO <strong>{ultimaGas.io}</strong></>} · FiO₂ <strong>{Math.round(ultimaGas.fio2*100)}%</strong></span>
+            </li>
+          )}
+        </ul>
       </div>
 
       {/* ABAS */}
@@ -482,9 +754,115 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
           {/* FISIOTERAPIA */}
           {tab==='fisio' && (
             <div className="space-y-5">
+              {/* SUPORTE VENTILATÓRIO ATUAL */}
+              <div className="bg-clinical-50/60 dark:bg-clinical-950/20 border border-clinical-200 dark:border-clinical-500/30 rounded-2xl p-4">
+                <SectionLabel icon="fa-lungs" text="Suporte Ventilatório Atual" color="text-clinical-600 dark:text-clinical-400"/>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Suporte</label>
+                    <select value={suporte} onChange={e=>trocarSuporte(e.target.value)} className={selectCls}>
+                      {DEVICE_OPTIONS.map(o=><option key={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Situação do Suporte</label>
+                    <select value={suporteStatus} onChange={e=>setSuporteStatus(e.target.value)} className={selectCls}>
+                      {SUPORTE_STATUS_OPTS.map(o=><option key={o}>{o}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Programação de extubação (VM invasiva) */}
+                {isVM(suporte) && (
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                    <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer">
+                      <input type="checkbox" checked={progExtub} onChange={e=>setProgExtub(e.target.checked)} className="accent-clinical-500 rounded"/>
+                      <span className="font-semibold">Programado para extubação?</span>
+                    </label>
+                    {progExtub && (
+                      <div>
+                        <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Data prevista</label>
+                        <input type="date" value={progExtubData} onChange={e=>setProgExtubData(e.target.value)} className={inputCls}/>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Modo + Modalidade (VM invasiva) */}
+                {isVM(suporte) && (
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Modo *</label>
+                      <select value={vmModo} onChange={e=>{setVmModo(e.target.value);setVmModalidade('');}} className={selectCls}>
+                        <option value="">Selecione...</option>
+                        {VM_MODO_OPTS.map(o=><option key={o}>{o}</option>)}
+                      </select>
+                    </div>
+                    {vmModo==='Assistido/Controlado' && (
+                      <div>
+                        <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Modalidade *</label>
+                        <select value={vmModalidade} onChange={e=>setVmModalidade(e.target.value)} className={selectCls}>
+                          <option value="">Selecione...</option>
+                          {VM_MODALIDADE_OPTS.map(o=><option key={o}>{o}</option>)}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Via aérea artificial (TOT/TQT em VM) */}
+                {isVM(suporte) && (
+                  <div className="mt-3">
+                    <SectionLabel icon="fa-circle-nodes" text="Via Aérea Artificial"/>
+                    <div className="grid grid-cols-3 gap-2">
+                      {VIA_AEREA.map(f=>(
+                        <div key={f.key}>
+                          <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">{f.label}{!f.optional&&' *'}</label>
+                          <input type="text" value={ventParams[f.key]||''} onChange={e=>setParam(f.key,e.target.value)} className={inputCls}/>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Parâmetros do suporte escolhido */}
+                {(isVM(suporte) ? modalidadeAtiva!=='' : (SUPORTE_PARAMS[suporte]??[]).length>0) && (
+                  <div className="mt-3">
+                    <SectionLabel icon="fa-sliders" text={isVM(suporte)?`Parâmetros — ${modalidadeAtiva}`:'Parâmetros (obrigatórios)'}/>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {(isVM(suporte) ? (VM_PARAMS[modalidadeAtiva]??[]) : (SUPORTE_PARAMS[suporte]??[])).map(f=>(
+                        <div key={f.key}>
+                          <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">{f.label}{!f.optional&&' *'}</label>
+                          {f.type==='select'
+                            ? <select value={ventParams[f.key]||''} onChange={e=>setParam(f.key,e.target.value)} className={selectCls}>
+                                <option value="">—</option>
+                                {(f.opts||[]).map(o=><option key={o}>{o}</option>)}
+                              </select>
+                            : <input type="text" value={ventParams[f.key]||''} onChange={e=>setParam(f.key,e.target.value)} className={inputCls}/>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Monitorização comum de VM (MAP, drive, volumes) */}
+                {isVM(suporte) && modalidadeAtiva!=='' && (
+                  <div className="mt-3">
+                    <SectionLabel icon="fa-wave-square" text="Monitorização (todos os modos)"/>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {VM_COMUNS.map(f=>(
+                        <div key={f.key}>
+                          <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">{f.label}{!f.optional&&' *'}</label>
+                          <input type="text" value={ventParams[f.key]||''} onChange={e=>setParam(f.key,e.target.value)} className={inputCls}/>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {[
-                  {label:'Suporte Ventilatório',opts:DEVICE_OPTIONS,def:patient.suporte},
                   {label:'Posicionamento',opts:['Decúbito Dorsal 0°','Cabeceira 30°','Cabeceira 45°','Decúbito Lateral D','Decúbito Lateral E','Pronado','Sentado'],def:'Cabeceira 30°'},
                   {label:'Aspiração',opts:['Não realizada','Nasofaríngea','Orofaríngea','TQT/TOT','Hiperinsuflação + aspiração'],def:'Não realizada'},
                 ].map(f=>(
@@ -530,11 +908,30 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-2 gap-x-4">
                   {ALERTAS.map(a=>(
                     <label key={a} className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 cursor-pointer group">
-                      <input type="checkbox" className="accent-amber-500 rounded"/>
+                      <input type="checkbox" checked={alertasSel.includes(a)} onChange={()=>toggleAlerta(a)} className="accent-amber-500 rounded"/>
                       <span className="group-hover:text-amber-600 dark:group-hover:text-amber-400 transition-colors">{a}</span>
                     </label>
                   ))}
                 </div>
+
+                {/* Restrição de decúbito — lado + justificativa */}
+                {restricaoDecub && (
+                  <div className="mt-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-700/40 rounded-xl p-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-[9px] font-bold uppercase tracking-widest text-amber-600 dark:text-amber-400 block mb-1">Lado *</label>
+                      <select value={decubLado} onChange={e=>setDecubLado(e.target.value)} className={selectCls}>
+                        <option value="">Selecione...</option>
+                        <option>Direito</option>
+                        <option>Esquerdo</option>
+                        <option>Ambos</option>
+                      </select>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="text-[9px] font-bold uppercase tracking-widest text-amber-600 dark:text-amber-400 block mb-1">Justificativa *</label>
+                      <input type="text" value={decubJust} onChange={e=>setDecubJust(e.target.value)} placeholder="Ex.: dreno de tórax à direita" className={inputCls}/>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Equipamentos */}
@@ -552,7 +949,23 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
                 <textarea rows={3} placeholder="Descreva as condutas realizadas..." className={`${inputCls} resize-none`}/>
               </div>
 
-              <button className="w-full bg-clinical-500 hover:bg-clinical-600 text-white font-bold py-3 rounded-xl text-xs transition flex items-center justify-center gap-2">
+              {erros.length>0 && (
+                <div className="bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-700/40 rounded-xl p-3">
+                  <p className="text-[11px] font-bold text-rose-600 dark:text-rose-400 mb-1">
+                    <i className="fa-solid fa-circle-exclamation mr-1"></i> Preencha os campos obrigatórios:
+                  </p>
+                  <ul className="text-[11px] text-rose-500 dark:text-rose-400 list-disc list-inside space-y-0.5">
+                    {erros.map(e=><li key={e}>{e}</li>)}
+                  </ul>
+                </div>
+              )}
+              {salvo && (
+                <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-700/40 rounded-xl p-3 flex items-center gap-2">
+                  <i className="fa-solid fa-circle-check text-emerald-500"></i>
+                  <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">Ficha salva com sucesso.</span>
+                </div>
+              )}
+              <button onClick={salvarFicha} className="w-full bg-clinical-500 hover:bg-clinical-600 text-white font-bold py-3 rounded-xl text-xs transition flex items-center justify-center gap-2">
                 <i className="fa-solid fa-floppy-disk"></i> Salvar Ficha
               </button>
             </div>
@@ -583,22 +996,120 @@ function PatientDetail({patient,onBack}:{patient:Patient;onBack:()=>void}) {
   );
 }
 
+/* ─── ADMISSÃO MANUAL ─────────────────────────────────── */
+function AdmitModal({onClose,onAdmit}:{onClose:()=>void;onAdmit:()=>void}) {
+  const [f,setF] = useState({
+    leito:String(nextFreeBed()), prontuario:'', nome:'', nasc:'', sexo:'Masculino' as Sexo, mae:'',
+    peso:'', alt:'', diagnostico:'', suporte:'Ar Ambiente', fisio:'',
+  });
+  const [erro,setErro] = useState('');
+  const set = (k:string,v:string)=>setF(x=>({...x,[k]:v}));
+  const confirmar = () => {
+    const leito = parseInt(f.leito);
+    if (!leito || !f.nome.trim() || !f.nasc || !f.prontuario.trim()) { setErro('Preencha leito, nome, nascimento e prontuário.'); return; }
+    if (PATIENTS.some(p=>p.id===leito)) { setErro(`O leito ${leito} já está ocupado.`); return; }
+    const hoje = new Date().toLocaleDateString('pt-BR');
+    const peso = parseFloat(f.peso)||0;
+    admitPatient({
+      id:leito, prontuario:f.prontuario.trim(), nome:f.nome.trim().toUpperCase(), nasc:fromInputDate(f.nasc),
+      sexo:f.sexo, mae:f.mae.trim().toUpperCase(), fisioResponsavel:f.fisio.trim()||'—',
+      status:'Estável', contato:false, diagnostico:f.diagnostico.trim()||'—', suporte:f.suporte, vm:isVM(f.suporte),
+      data_internacao:hoje, pesoKg:peso, altCm:parseFloat(f.alt)||0,
+      spO2:97, fc:120, fr:30, pas:90, pad:50, temp:36.5, fio2:0.21, pao2:90,
+      evolucao:'Paciente admitido na UTI PED.',
+      satAlvoMin:94, satAlvoMax:98, volCorrenteAlvo:Math.round(5*peso),
+      gas:[], dispositivos:[{id:1,device:f.suporte,inicio:hoje}],
+    });
+    onAdmit();
+  };
+  const campos: {k:string;label:string;type?:string;span2?:boolean}[] = [
+    {k:'nome',label:'Nome Completo *',span2:true},
+    {k:'nasc',label:'Nascimento *',type:'date'},
+    {k:'prontuario',label:'Prontuário *'},
+    {k:'leito',label:'Leito *',type:'number'},
+    {k:'mae',label:'Mãe'},
+    {k:'peso',label:'Peso (kg)',type:'number'},
+    {k:'alt',label:'Altura (cm)',type:'number'},
+    {k:'diagnostico',label:'Diagnóstico Principal',span2:true},
+    {k:'fisio',label:'Fisioterapeuta Responsável',span2:true},
+  ];
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/60 rounded-2xl shadow-2xl w-full max-w-lg p-5 my-8">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-extrabold text-clinical-800 dark:text-white flex items-center gap-2">
+            <span className="w-8 h-8 bg-clinical-500 text-white rounded-xl flex items-center justify-center"><i className="fa-solid fa-bed-pulse text-sm"></i></span>
+            Admitir Paciente
+          </h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-white transition p-1"><i className="fa-solid fa-xmark"></i></button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {campos.map(c=>(
+            <div key={c.k} className={c.span2?'col-span-2':''}>
+              <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">{c.label}</label>
+              <input type={c.type||'text'} value={(f as any)[c.k]} onChange={e=>set(c.k,e.target.value)} className={inputCls}/>
+            </div>
+          ))}
+          <div>
+            <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Sexo</label>
+            <select value={f.sexo} onChange={e=>set('sexo',e.target.value)} className={selectCls}>
+              <option>Masculino</option><option>Feminino</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Suporte na Admissão</label>
+            <select value={f.suporte} onChange={e=>set('suporte',e.target.value)} className={selectCls}>
+              {DEVICE_OPTIONS.map(d=><option key={d}>{d}</option>)}
+            </select>
+          </div>
+        </div>
+        {erro && (
+          <p className="mt-3 text-[11px] font-bold text-rose-600 dark:text-rose-400">
+            <i className="fa-solid fa-circle-exclamation mr-1"></i>{erro}
+          </p>
+        )}
+        <div className="flex gap-2 mt-4">
+          <button onClick={onClose} className="flex-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 font-bold py-2.5 rounded-xl text-xs transition">Cancelar</button>
+          <button onClick={confirmar} className="flex-1 bg-clinical-500 hover:bg-clinical-600 text-white font-bold py-2.5 rounded-xl text-xs transition flex items-center justify-center gap-2">
+            <i className="fa-solid fa-check"></i> Admitir
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─── LISTA DE LEITOS ─────────────────────────────────── */
 export default function Bedside() {
   const [search,setSearch]     = useState('');
   const [selected,setSelected] = useState<Patient|null>(null);
+  const [showAdmit,setShowAdmit] = useState(false);
+  const [,refresh] = useState(0);
   const filtered = PATIENTS.filter(p =>
     p.nome.toLowerCase().includes(search.toLowerCase()) || String(p.id).includes(search)
   );
-  if (selected) return <PatientDetail patient={selected} onBack={()=>setSelected(null)}/>;
+  if (selected) return (
+    <PatientDetail
+      patient={selected}
+      onBack={()=>setSelected(null)}
+      onDischarge={()=>{ dischargePatient(selected.id); setSelected(null); }}
+    />
+  );
 
   return (
     <section className="p-6 space-y-4">
-      <div className="relative">
-        <i className="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
-        <input type="text" value={search} onChange={e=>setSearch(e.target.value)}
-          placeholder="Buscar por nome ou número do leito..."
-          className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl py-3.5 pl-11 pr-4 text-sm text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:border-clinical-500 transition shadow-sm"/>
+      {showAdmit && <AdmitModal onClose={()=>setShowAdmit(false)} onAdmit={()=>{setShowAdmit(false); refresh(n=>n+1);}}/>}
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <i className="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+          <input type="text" value={search} onChange={e=>setSearch(e.target.value)}
+            placeholder="Buscar por nome ou número do leito..."
+            className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl py-3.5 pl-11 pr-4 text-sm text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:border-clinical-500 transition shadow-sm"/>
+        </div>
+        <button onClick={()=>setShowAdmit(true)}
+          className="shrink-0 flex items-center gap-2 text-xs font-bold bg-clinical-500 hover:bg-clinical-600 text-white px-4 rounded-2xl shadow-sm transition">
+          <i className="fa-solid fa-plus"></i> <span className="hidden sm:inline">Admitir Paciente</span>
+        </button>
       </div>
 
       <div className="flex items-center justify-between flex-wrap gap-2">
