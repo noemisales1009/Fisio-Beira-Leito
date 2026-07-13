@@ -1,6 +1,9 @@
 import React from 'react';
 
-export default function Sidebar({ currentView, setCurrentView, onLogout, toggleMobileMenu, turno, physioName }: any) {
+export default function Sidebar({ currentView, setCurrentView, onLogout, toggleMobileMenu, turno, physioName, userInfo }: any) {
+  const iniciais = String(physioName || '')
+    .split(/\s+/).filter(Boolean).slice(0, 2)
+    .map((w: string) => w[0]).join('').toUpperCase() || 'FT';
   const navItems = [
     { id: 'dashboard', icon: 'fa-gauge-high', label: 'Painel Geral (UTI PED)' },
     { id: 'bedside', icon: 'fa-bed', label: 'Ficha & Beira Leito' },
@@ -31,11 +34,11 @@ export default function Sidebar({ currentView, setCurrentView, onLogout, toggleM
         {/* Plantonista Info */}
         <div className="p-4 bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800/80 flex items-center gap-3 transition-colors">
           <div className="w-10 h-10 rounded-full bg-clinical-100 dark:bg-clinical-500/10 border border-clinical-200 dark:border-clinical-500/30 flex items-center justify-center text-clinical-600 dark:text-clinical-400 font-bold transition-colors">
-            MS
+            {iniciais}
           </div>
           <div>
-            <div className="text-xs font-bold text-slate-800 dark:text-white transition-colors">{physioName || 'Dra. Mariana S.'}</div>
-            <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono transition-colors">CREFITO 48291-F</div>
+            <div className="text-xs font-bold text-slate-800 dark:text-white transition-colors">{physioName || 'Fisioterapeuta'}</div>
+            {userInfo && <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono transition-colors">{userInfo}</div>}
             {turno && (
               <div className="text-[10px] text-clinical-600 dark:text-clinical-400 font-semibold mt-0.5 transition-colors">
                 <i className="fa-regular fa-clock"></i> Turno: {turno}

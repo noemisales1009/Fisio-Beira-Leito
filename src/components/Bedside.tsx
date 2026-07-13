@@ -4,9 +4,12 @@ import {
   Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import {
-  Status, Sexo, GasEntry, DeviceEntry, Patient,
+  Status, GasEntry, DeviceEntry, Patient,
   calcIdade, calcDias, calcDuracao, fromInputDate,
-  PATIENTS, admitPatient, dischargePatient, nextFreeBed,
+  PATIENTS, admitPatient, dischargePatient, nextFreeBed, persistPatient, fichaInicial,
+  PRECAUCAO_LABEL, precaucoesDe, isRespiratorio, loadSinaisVitais, saveSinaisVitais,
+  saveSuporteVentilatorio, isDbOnline, loadDispositivos, addDispositivo, removeDispositivo,
+  ScoreRegistro, saveScore, loadScores, loadGasometria, saveGasometria, equipamentoParaSuporte,
 } from '../patients';
 
 /* ─── STATUS / BORDERS ───────────────────────────────── */
@@ -23,6 +26,13 @@ const DEVICE_OPTIONS = [
   'Ar Ambiente','Cateter Nasal','Máscara Comum','Máscara Venturi',
   'CNAF','VNI','TOT em VM','TQT em VM','TQT em Ar Amb.','TQT em O₂',
   'Pronação','NOI (Óxido Nítrico)',
+];
+
+// Aba Equipamentos: só dispositivos RESPIRATÓRIOS que a fisioterapia gerencia
+// (os demais — CVC, AVP, SVD, SNE, drenos... — são da equipe médica/enfermagem).
+const EQUIP_RESPIRATORIOS = [
+  'Cateter Nasal de O₂','Máscara Comum','Máscara Concentradora','Máscara de Venturi',
+  'CNAF','VNI','TOT','TQT',
 ];
 
 /* ─── SUPORTE VENTILATÓRIO ATUAL — parâmetros obrigatórios por suporte ── */
@@ -106,13 +116,30 @@ function GasometriaPanel({patient}:{patient:Patient}) {
   const [entries,setEntries] = useState<GasEntry[]>(patient.gas);
   const [form,setForm] = useState({data:'',hora:'',ph:'',paco2:'',pao2:'',hco3:'',be:'',fio2:'',map:''});
   const set = (k:string,v:string) => setForm(f=>({...f,[k]:v}));
-  const add = () => {
+  const online = isDbOnline() && !!patient.rowId;
+
+  // carrega o histórico de gasometria da tabela fisio_gasometria
+  useEffect(() => {
+    if (!online || !patient.rowId) return;
+    let ativo = true;
+    loadGasometria(patient.rowId).then(regs => {
+      if (ativo && regs) { setEntries(regs); patient.gas = regs; }
+    });
+    return () => { ativo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const add = async () => {
     const pao2=parseFloat(form.pao2), fio2=parseFloat(form.fio2);
     const map = form.map ? parseFloat(form.map) : null;
     if (!form.data||!pao2||!fio2) return;
     // IO = MAP × FiO₂ × 100 / PaO₂ — calculado apenas quando a MAP é registrada
     const e: GasEntry = {data:form.data,hora:form.hora,ph:parseFloat(form.ph)||0,paco2:parseFloat(form.paco2)||0,pao2,hco3:parseFloat(form.hco3)||0,be:parseFloat(form.be)||0,fio2,map,pf:+(pao2/fio2).toFixed(0),io:map!=null?+(map*fio2*100/pao2).toFixed(1):null};
-    setEntries(p=>[...p,e]);
+    const atualizadas = [...entries, e];
+    setEntries(atualizadas);
+    patient.gas = atualizadas;
+    if (online && patient.rowId) await saveGasometria(patient.rowId, e);
+    else void persistPatient(patient);
     setForm({data:'',hora:'',ph:'',paco2:'',pao2:'',hco3:'',be:'',fio2:'',map:''});
   };
   const chartData = entries.map(e=>({name:`${e.data} ${e.hora}`,PF:e.pf,IO:e.io}));
@@ -192,21 +219,52 @@ function GasometriaPanel({patient}:{patient:Patient}) {
 }
 
 /* ─── DISPOSITIVOS PANEL ─────────────────────────────── */
-function DispositivosPanel({patient}:{patient:Patient}) {
+function DispositivosPanel({patient,onSuporteSugerido}:{patient:Patient;onSuporteSugerido?:(s:string)=>void}) {
   const [entries,setEntries] = useState<DeviceEntry[]>(patient.dispositivos);
   const [nextId,setNextId]   = useState(patient.dispositivos.length+1);
   const [newDevice,setNewDevice] = useState('');
+  const [newLocal,setNewLocal] = useState('');
   const [newInicio,setNewInicio] = useState('');
   const [retiradaMap,setRetiradaMap] = useState<Record<number,string>>({});
+  const online = isDbOnline() && !!patient.rowId;
 
-  const addEntry = () => {
+  // carrega os dispositivos reais da tabela do Round (dispositivos_pacientes)
+  useEffect(() => {
+    if (!online || !patient.rowId) return;
+    let ativo = true;
+    loadDispositivos(patient.rowId).then(regs => {
+      if (ativo && regs) { setEntries(regs); patient.dispositivos = regs; }
+    });
+    return () => { ativo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const addEntry = async () => {
     if (!newDevice||!newInicio) return;
-    setEntries(p=>[...p,{id:nextId,device:newDevice,inicio:fromInputDate(newInicio)}]);
-    setNextId(n=>n+1); setNewDevice(''); setNewInicio('');
+    if (online && patient.rowId) {
+      const id = await addDispositivo(patient.rowId, newDevice, newLocal.trim(), newInicio);
+      if (id != null) {
+        const nova = {id, device: newLocal.trim() ? `${newDevice} (${newLocal.trim()})` : newDevice, inicio: fromInputDate(newInicio)};
+        const atualizados = [...entries, nova];
+        setEntries(atualizados); patient.dispositivos = atualizados;
+      }
+    } else {
+      const atualizados = [...entries, {id:nextId,device: newLocal.trim() ? `${newDevice} (${newLocal.trim()})` : newDevice, inicio:fromInputDate(newInicio)}];
+      setEntries(atualizados); patient.dispositivos = atualizados;
+      void persistPatient(patient); setNextId(n=>n+1);
+    }
+    // liga com o Suporte Ventilatório Atual: o equipamento criado vira o suporte vigente
+    const sug = equipamentoParaSuporte(newDevice);
+    if (sug) onSuporteSugerido?.(sug);
+    setNewDevice(''); setNewLocal(''); setNewInicio('');
   };
-  const markRetirada = (id:number) => {
+  const markRetirada = async (id:number) => {
     const date=retiradaMap[id]; if (!date) return;
-    setEntries(p=>p.map(e=>e.id===id?{...e,retirada:fromInputDate(date)}:e));
+    if (online) await removeDispositivo(id, date);
+    const atualizados = entries.map(e=>e.id===id?{...e,retirada:fromInputDate(date)}:e);
+    setEntries(atualizados);
+    patient.dispositivos = atualizados;
+    if (!online) void persistPatient(patient);
     setRetiradaMap(m=>({...m,[id]:''}));
   };
   const ativos   = entries.filter(e=>!e.retirada);
@@ -281,119 +339,423 @@ function DispositivosPanel({patient}:{patient:Patient}) {
             <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Equipamento / Suporte</label>
             <select value={newDevice} onChange={e=>setNewDevice(e.target.value)} className={selectCls}>
               <option value="">Selecione...</option>
-              {DEVICE_OPTIONS.map(d=><option key={d}>{d}</option>)}
+              {EQUIP_RESPIRATORIOS.map(d=><option key={d}>{d}</option>)}
             </select>
+          </div>
+          <div>
+            <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Localização{online && ' *'}</label>
+            <input type="text" value={newLocal} onChange={e=>setNewLocal(e.target.value)} placeholder="Ex.: narina D, subclávia D, MSE" className={inputCls}/>
           </div>
           <div>
             <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Data de Início</label>
             <input type="date" value={newInicio} onChange={e=>setNewInicio(e.target.value)} className={inputCls}/>
           </div>
         </div>
-        <button onClick={addEntry} disabled={!newDevice||!newInicio}
+        <button onClick={addEntry} disabled={!newDevice||!newInicio||(online&&!newLocal.trim())}
           className="w-full bg-clinical-500 hover:bg-clinical-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2.5 rounded-xl text-xs transition flex items-center justify-center gap-2">
           <i className="fa-solid fa-plus"></i> Registrar Equipamento
         </button>
+        {online && <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-2"><i className="fa-solid fa-circle-info mr-1"></i>Salvo na tabela dispositivos_pacientes (compartilhada com o Round).</p>}
       </div>
     </div>
   );
 }
 
-/* ─── SCORES PANEL ───────────────────────────────────── */
-function ScoresPanel({patient}:{patient:Patient}) {
-  const [activeCalc,setActiveCalc] = useState<string|null>(null);
-  const [dfTotal,setDfTotal] = useState(0);
-  // fórmulas: P/F = PaO₂/FiO₂ · S/F = SpO₂/FiO₂ · IO = MAP×FiO₂×100/PaO₂ · ISO = MAP×FiO₂×100/SpO₂
-  const sf=+(patient.spO2/patient.fio2).toFixed(0), pf=+(patient.pao2/patient.fio2).toFixed(0);
-  const lastMap = [...patient.gas].reverse().find(g=>g.map!=null)?.map ?? null;
-  const oi  = lastMap!=null ? +(lastMap*patient.fio2*100/patient.pao2).toFixed(1) : null;
-  const osi = lastMap!=null ? +(lastMap*patient.fio2*100/patient.spO2).toFixed(1) : null;
-  const vcAlvo=+(5*patient.pesoKg).toFixed(0);
+/* ─── SCORES PANEL — escalas portadas do app Round ───── */
+interface EscalaOpcao { valor: number; texto: string }
+interface EscalaItem  { id: string; label: string; opcoes: EscalaOpcao[] }
+interface EscalaResultado { texto: string; conduta: string; tom: 'ok'|'info'|'mod'|'grave' }
 
-  const badge = () => {
-    if (dfTotal===0) return {t:'Sem Alterações',c:'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-700/40'};
-    if (dfTotal<=3)  return {t:'Quadro Leve',    c:'bg-teal-50 dark:bg-teal-900/30 text-teal-700 dark:text-teal-400 border-teal-200 dark:border-teal-700/40'};
-    if (dfTotal<=7)  return {t:'Quadro Moderado',c:'bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-700/40'};
-    return               {t:'Quadro Grave',      c:'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-700/40'};
+const TOM_CLASSES: Record<EscalaResultado['tom'],string> = {
+  ok:    'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-700/40',
+  info:  'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-700/40',
+  mod:   'bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-700/40',
+  grave: 'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-700/40',
+};
+
+const mkOpts = (...textos: string[]): EscalaOpcao[] => textos.map((texto,valor)=>({valor,texto}));
+
+/* Boletim Silverman-Anderson — RN (0–28 dias) — /10 */
+const SILVERMAN_ITENS: EscalaItem[] = [
+  { id:'movimento',  label:'Mov. Tóraco-Abdominal',   opcoes: mkOpts('Sincrônico','Leve assincronia','Paradoxal') },
+  { id:'intercostal',label:'Retração Intercostal',    opcoes: mkOpts('Ausente','Leve','Marcada') },
+  { id:'xifoide',    label:'Retração Xifoide',        opcoes: mkOpts('Ausente','Leve','Marcada') },
+  { id:'asaNasal',   label:'Batimento de Asa Nasal',  opcoes: mkOpts('Ausente','Discreto','Marcado') },
+  { id:'gemido',     label:'Gemido Expiratório',      opcoes: mkOpts('Ausente','Audível com estetoscópio','Audível sem estetoscópio') },
+];
+const interpretaSilverman = (t:number): EscalaResultado =>
+  t===0 ? { texto:'Sem desconforto respiratório', conduta:'Observação / O₂ se necessário', tom:'ok' }
+  : t<=3 ? { texto:'Desconforto Leve', conduta:'Observação / O₂ se necessário', tom:'ok' }
+  : t<=6 ? { texto:'Desconforto Moderado', conduta:'CPAP nasal ou CNAF', tom:'mod' }
+  : { texto:'Desconforto Grave', conduta:'Forte possibilidade de VMPI', tom:'grave' };
+
+/* Wood-Downes modificada por Ferrés — Lactentes (30 dias a 2 anos) — /14 */
+const WDF_ITENS: EscalaItem[] = [
+  { id:'sibilos',   label:'Sibilos',            opcoes: mkOpts('Ausente','Expiratório','Contínuos','Inspiratório + Expiratório') },
+  { id:'tiragem',   label:'Tiragem',            opcoes: mkOpts('Ausente','Subcostal','Supraclavicular','Generalizada') },
+  { id:'ventilacao',label:'Ventilação',         opcoes: mkOpts('Boa','Regular','Diminuída','Silenciosa') },
+  { id:'fr',        label:'FR (irpm)',          opcoes: mkOpts('< 30 irpm','31 a 45 irpm','46 a 60 irpm','> 60 irpm') },
+  { id:'fc',        label:'FC (bpm)',           opcoes: mkOpts('< 120 bpm','≥ 120 bpm') },
+  { id:'cianose',   label:'Cianose',            opcoes: mkOpts('Ausente','Presente') },
+];
+const interpretaWDF = (t:number): EscalaResultado =>
+  t===0 ? { texto:'Sem alterações', conduta:'Manter observação', tom:'ok' }
+  : t<=3 ? { texto:'Desconforto Leve', conduta:'CN ou CNAF', tom:'ok' }
+  : t<=7 ? { texto:'Desconforto Moderado', conduta:'CNAF ou VNI', tom:'mod' }
+  : { texto:'Desconforto Grave', conduta:'VMPI', tom:'grave' };
+
+/* Avaliação de Insuficiência Respiratória — Pré-escolar/Escolar/Adolescente — /12 */
+const INSUF_ITENS: EscalaItem[] = [
+  { id:'fr',        label:'Frequência Respiratória',       opcoes: mkOpts('Normal para a idade','Moderadamente aumentada','Taquipneia intensa') },
+  { id:'musculatura',label:'Musculatura Acessória',        opcoes: mkOpts('Ausente','Leve (asa nasal, retração intercostal)','Intensa (tiragem subcostal ou esternocleidomastoideo)') },
+  { id:'ausculta',  label:'Ausculta Pulmonar',             opcoes: mkOpts('Som pulmonar preservado','Redução do som pulmonar','Redução acentuada / sibilos silenciosos') },
+  { id:'cianose',   label:'Cianose',                       opcoes: mkOpts('Ausente','Perioral (com esforço)','Generalizada ou em repouso') },
+  { id:'mental',    label:'Estado Mental',                 opcoes: mkOpts('Alerta','Irritado, ansioso','Sonolento, confuso, obnubilado') },
+  { id:'saturacao', label:'Saturação de O₂ (Ar Ambiente)', opcoes: mkOpts('≥ 94%','90 a 93%','< 90%') },
+];
+const interpretaInsuf = (t:number): EscalaResultado =>
+  t<=3 ? { texto:'Insuficiência Respiratória Leve', conduta:'Observação — sem sinais de alerta', tom:'ok' }
+  : t<=6 ? { texto:'Insuficiência Respiratória Moderada', conduta:'Considerar oxigenoterapia', tom:'mod' }
+  : { texto:'Insuficiência Respiratória Grave', conduta:'Avaliar escalonamento do suporte ventilatório', tom:'grave' };
+
+/* Glasgow por faixa etária — /15 */
+const GLASGOW_OCULAR: EscalaOpcao[] = [
+  { valor:1, texto:'Nenhuma' }, { valor:2, texto:'À dor' }, { valor:3, texto:'Ao som' }, { valor:4, texto:'Espontânea' },
+];
+const GLASGOW_FAIXAS: Record<string,{titulo:string; verbal:EscalaOpcao[]; motora:EscalaOpcao[]}> = {
+  adulto: {
+    titulo:'Adulto / Criança (≥ 5 anos)',
+    verbal: [
+      { valor:1, texto:'Nenhuma' }, { valor:2, texto:'Sons incompreensíveis' }, { valor:3, texto:'Palavras inadequadas' },
+      { valor:4, texto:'Confuso' }, { valor:5, texto:'Orientado' },
+    ],
+    motora: [
+      { valor:1, texto:'Nenhuma' }, { valor:2, texto:'Extensão anormal (descerebração)' }, { valor:3, texto:'Flexão anormal (decorticação)' },
+      { valor:4, texto:'Retirada inespecífica' }, { valor:5, texto:'Localiza dor' }, { valor:6, texto:'Obedece comandos' },
+    ],
+  },
+  crianca: {
+    titulo:'Pediátrica (1 a 4 anos)',
+    verbal: [
+      { valor:1, texto:'Nenhuma vocalização' }, { valor:2, texto:'Gemidos de dor' }, { valor:3, texto:'Choro persistente / irritado' },
+      { valor:4, texto:'Choro consolável' }, { valor:5, texto:'Balbucia / vocaliza adequadamente' },
+    ],
+    motora: [
+      { valor:1, texto:'Nenhuma resposta motora' }, { valor:2, texto:'Extensão anormal (descerebração)' }, { valor:3, texto:'Flexão anormal (decorticação)' },
+      { valor:4, texto:'Retirada inespecífica' }, { valor:5, texto:'Retirada ao toque/dor' }, { valor:6, texto:'Mov. espontâneos / obedece comandos simples' },
+    ],
+  },
+  lactente: {
+    titulo:'Pediátrica (< 1 ano)',
+    verbal: [
+      { valor:1, texto:'Ausência de sons' }, { valor:2, texto:'Gemido à dor' }, { valor:3, texto:'Choro inconsolável' },
+      { valor:4, texto:'Chora mas é consolável' }, { valor:5, texto:'Sons normais / balbucia' },
+    ],
+    motora: [
+      { valor:1, texto:'Nenhuma resposta' }, { valor:2, texto:'Extensão anormal (descerebração)' }, { valor:3, texto:'Flexão anormal (decorticação)' },
+      { valor:4, texto:'Retirada inespecífica' }, { valor:5, texto:'Retirada ao estímulo doloroso' }, { valor:6, texto:'Movimentos espontâneos / retira ao toque' },
+    ],
+  },
+};
+const interpretaGlasgow = (t:number): EscalaResultado =>
+  t>=13 ? { texto:'Alteração Leve', conduta:'Consciência preservada', tom:'ok' }
+  : t>=9 ? { texto:'Alteração Moderada', conduta:'Rebaixamento moderado', tom:'mod' }
+  : t>=6 ? { texto:'Coma Grave', conduta:'Indicação de via aérea definitiva', tom:'grave' }
+  : { texto:'Extremamente Grave', conduta:'Risco de dano neurológico extenso', tom:'grave' };
+
+/* COMFORT-B — /30 (domínio 3 muda conforme intubado) */
+const mkOpts1 = (...textos: string[]): EscalaOpcao[] => textos.map((texto,i)=>({valor:i+1,texto}));
+const COMFORT_BASE = {
+  alerta:    { id:'alerta',   label:'1 – Alerta',            opcoes: mkOpts1('Sonolento','Acordado, mas não totalmente alerta','Alerta','Muito alerta / hipervigilante','Agitado') },
+  calma:     { id:'calma',    label:'2 – Calma / Agitação',  opcoes: mkOpts1('Calmo','Leve inquietação','Moderadamente inquieto','Agitado','Muito agitado / inconsolável') },
+  choro:     { id:'choro',    label:'3 – Choro (não intubado)', opcoes: mkOpts1('Não chora','Geme / choraminga','Choro moderado','Choro forte','Choro intenso / contínuo') },
+  respiracao:{ id:'respiracao',label:'3 – Respiração (intubado)', opcoes: mkOpts1('Sem esforço respiratório','Leve desconforto respiratório','Moderado desconforto respiratório','Respiração irregular / agitada','Grande esforço respiratório') },
+  movimento: { id:'movimento',label:'4 – Movimentos Físicos', opcoes: mkOpts1('Sem movimento','Movimentos mínimos','Movimentos moderados','Movimentos frequentes','Movimentos intensos / desorganizados') },
+  tonus:     { id:'tonus',    label:'5 – Tônus Corporal',     opcoes: mkOpts1('Relaxado','Levemente aumentado','Aumentado','Muito aumentado','Extremamente rígido') },
+  tensao:    { id:'tensao',   label:'6 – Tensão Facial',      opcoes: mkOpts1('Sem tensão','Leve tensão','Moderada tensão','Tensão evidente','Tensão extrema / expressão de dor') },
+};
+const interpretaComfort = (t:number): EscalaResultado =>
+  t<=10 ? { texto:'Sedação Excessiva', conduta:'Paciente muito sedado — avaliar reduzir medicação', tom:'info' }
+  : t<=22 ? { texto:'Conforto Adequado', conduta:'Nível ideal de analgesia e sedação', tom:'ok' }
+  : { texto:'Dor / Desconforto', conduta:'Paciente em sofrimento — reavaliar conduta imediatamente', tom:'grave' };
+
+/* Escore de Resposta a VNI/CNAF — /14 */
+const VNICNAF_ITENS: EscalaItem[] = [
+  { id:'fr',          label:'1. Frequência Respiratória (FR)', opcoes: mkOpts('Redução > 20%','Redução < 20% persistente','Sem mudança ou aumento') },
+  { id:'musculatura', label:'2. Uso de Musculatura Acessória', opcoes: mkOpts('Reduzido','Persistente','Aumenta ou permanece intenso') },
+  { id:'consciencia', label:'3. Nível de Consciência',         opcoes: mkOpts('Alerta, melhora clínica','Mantém irritabilidade leve','Sonolência, rebaixamento, letargia') },
+  { id:'saturacao',   label:'4. Saturação com VNI/CNAF',       opcoes: mkOpts('≥ 94% com FiO₂ ≤ 40%','90–93% com FiO₂ ≤ 50%','< 90% com FiO₂ ≤ 60%') },
+  { id:'gasometria',  label:'5. Gasometria Arterial (se disponível)', opcoes: mkOpts('pH > 7,3 · PaCO₂ menor ou estável','pH 7,25 a 7,3 · PaCO₂ maior ou leve','pH < 7,25 · PaCO₂ subindo progressivamente') },
+  { id:'conforto',    label:'6. Conforto Respiratório',        opcoes: mkOpts('Confortável','Leve desconforto persistente','Piora do desconforto') },
+  { id:'ausculta',    label:'7. Ausculta Pulmonar',            opcoes: mkOpts('Melhora de entrada de ar','Sem mudança significativa','Redução acentuada, sinais de esgotamento') },
+];
+const interpretaVniCnaf = (t:number): EscalaResultado =>
+  t<=4 ? { texto:'Boa Resposta à VNI/CNAF', conduta:'Manter estratégia atual e monitorar', tom:'ok' }
+  : t<=8 ? { texto:'Resposta Parcial / Vigilância', conduta:'Vigilância intensa — reavaliar parâmetros (IPAP, EPAP, FiO₂, interface)', tom:'mod' }
+  : { texto:'Sinais de Falência', conduta:'Possível indicação de IOT — RNC, hipoxemia refratária, hipercapnia progressiva', tom:'grave' };
+
+/* Formulário genérico de escala (padrão do Round) */
+function EscalaRoundForm({itens,max,interpreta,scaleName,patientRowId}:{itens:EscalaItem[]; max:number; interpreta:(t:number)=>EscalaResultado; scaleName:string; patientRowId?:string}) {
+  const [resp,setResp] = useState<Record<string,number>>({});
+  const [historico,setHistorico] = useState<ScoreRegistro[]>([]);
+  const [gravando,setGravando] = useState(false);
+  const [gravado,setGravado] = useState(false);
+  const respondidos = Object.keys(resp).length;
+  const total = (Object.values(resp) as number[]).reduce((s,v)=>s+v,0);
+  const completo = respondidos === itens.length;
+  const res = completo ? interpreta(total) : null;
+  const online = isDbOnline() && !!patientRowId;
+
+  useEffect(() => {
+    if (!online || !patientRowId) return;
+    let ativo = true;
+    loadScores(patientRowId, scaleName).then(regs => { if (ativo && regs) setHistorico(regs); });
+    return () => { ativo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scaleName]);
+
+  const gravar = async () => {
+    if (!res || !patientRowId) return;
+    setGravando(true);
+    const ok = await saveScore(patientRowId, scaleName, total, `${res.texto} — ${res.conduta}`);
+    setGravando(false);
+    if (ok) {
+      setGravado(true);
+      setTimeout(()=>setGravado(false), 3000);
+      const regs = await loadScores(patientRowId, scaleName);
+      if (regs) setHistorico(regs);
+    }
   };
 
-  if (!activeCalc) return (
-    <div className="grid grid-cols-2 gap-3">
-      {[
-        {key:'conforto',  icon:'fa-child',     title:'Conforto Resp.',       sub:'Downes-Ferrés 0–12'},
-        {key:'oxigenacao',icon:'fa-lungs',     title:'Oxigenação',           sub:`P/F=${pf} · S/F=${sf}${oi?` · IO=${oi}`:''}`},
-        {key:'parametros',icon:'fa-wind',      title:'Parâm. Ventilatórios', sub:`VC alvo=${vcAlvo} mL`},
-        {key:'mecanica',  icon:'fa-chart-line',title:'Mecânica Resp.',       sub:'ΔP, Complacência'},
-      ].map(c=>(
-        <button key={c.key} onClick={()=>setActiveCalc(c.key)}
-          className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-clinical-400 dark:hover:border-clinical-500/60 p-4 rounded-xl text-left group transition">
-          <div className="w-10 h-10 bg-clinical-500 text-white rounded-xl flex items-center justify-center text-lg shadow-md mb-3 group-hover:scale-105 transition-transform">
-            <i className={`fa-solid ${c.icon}`}></i>
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {itens.map(item=>(
+          <div key={item.id}>
+            <label className="text-[9px] font-bold uppercase text-slate-400 dark:text-slate-500 tracking-widest block mb-1">{item.label}</label>
+            <select value={resp[item.id] ?? ''} onChange={e=>setResp(p=>({...p,[item.id]:parseInt(e.target.value)}))} className={selectCls}>
+              <option value="" disabled>Selecione...</option>
+              {item.opcoes.map(o=><option key={o.valor} value={o.valor}>{o.valor} — {o.texto}</option>)}
+            </select>
           </div>
-          <h4 className="text-xs font-bold text-slate-800 dark:text-white mb-1">{c.title}</h4>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">{c.sub}</p>
+        ))}
+      </div>
+      <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+        <div className="h-full bg-clinical-500 transition-all duration-500" style={{width:`${respondidos/itens.length*100}%`}}/>
+      </div>
+      <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-xl flex items-center justify-between gap-3 flex-wrap">
+        <span className="text-3xl font-extrabold text-slate-800 dark:text-white font-mono">{total}<span className="text-slate-400 text-lg"> / {max}</span></span>
+        {res
+          ? <div className={`px-3 py-2 rounded-xl text-xs font-bold border text-right ${TOM_CLASSES[res.tom]}`}>
+              <div>{res.texto}</div>
+              <div className="font-normal opacity-90 mt-0.5">{res.conduta}</div>
+            </div>
+          : <span className="text-[10px] text-slate-400 dark:text-slate-500">Responda os itens ({respondidos}/{itens.length})</span>}
+      </div>
+
+      {/* Gravar no prontuário (tabela scale_scores, compartilhada com o Round) */}
+      <div className="flex items-center justify-end gap-3 flex-wrap">
+        {gravado && <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400"><i className="fa-solid fa-circle-check mr-1"></i>Gravado no prontuário</span>}
+        <button onClick={gravar} disabled={!res || !online || gravando}
+          className="bg-clinical-500 hover:bg-clinical-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-xs px-4 py-2 rounded-xl transition flex items-center gap-2">
+          <i className="fa-solid fa-floppy-disk"></i> {gravando ? 'Gravando...' : 'Gravar no Prontuário'}
+        </button>
+      </div>
+      {!online && <p className="text-[10px] text-amber-600 dark:text-amber-400 text-right"><i className="fa-solid fa-triangle-exclamation mr-1"></i>Modo demonstração — não grava no prontuário</p>}
+
+      {/* Histórico do score (scale_scores) */}
+      {historico.length>0 && (
+        <div className="border-t border-slate-100 dark:border-slate-800 pt-3">
+          <SectionLabel icon="fa-clock-rotate-left" text="Histórico registrado"/>
+          <div className="space-y-1.5">
+            {historico.map((h,i)=>(
+              <div key={i} className="flex items-center justify-between text-[11px] bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-1.5">
+                <span className="text-slate-500 dark:text-slate-400">{new Date(h.date).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</span>
+                <span className="font-bold text-slate-700 dark:text-slate-200">{h.score} <span className="font-normal text-slate-400">· {h.interpretation}</span></span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FaixaChips<T extends string>({opcoes,valor,onChange}:{opcoes:{key:T;label:string}[]; valor:T; onChange:(v:T)=>void}) {
+  return (
+    <div className="flex gap-1.5 flex-wrap">
+      {opcoes.map(o=>(
+        <button key={o.key} onClick={()=>onChange(o.key)}
+          className={`text-[10px] font-bold px-2.5 py-1.5 rounded-full border transition ${valor===o.key
+            ?'bg-clinical-500 text-white border-clinical-500 shadow-sm'
+            :'bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:border-clinical-400'}`}>
+          {o.label}
         </button>
       ))}
     </div>
   );
+}
+
+function ScoresPanel({patient}:{patient:Patient}) {
+  const [activeCalc,setActiveCalc] = useState<string|null>(null);
+
+  // sugere a faixa etária a partir do nascimento
+  const idadeDias = (() => {
+    const [d,m,a] = patient.nasc.split('/').map(Number);
+    return Math.floor((Date.now() - new Date(a,m-1,d).getTime()) / 86400000);
+  })();
+  const [confortoFaixa,setConfortoFaixa] = useState<'rn'|'lactente'|'crianca'>(idadeDias<=28?'rn':idadeDias<=730?'lactente':'crianca');
+  const [glasgowFaixa,setGlasgowFaixa]   = useState<'lactente'|'crianca'|'adulto'>(idadeDias<365?'lactente':idadeDias<5*365?'crianca':'adulto');
+  const [intubado,setIntubado]           = useState(patient.vm);
+
+  // histórico de TODOS os scores registrados (scale_scores), para ver por data
+  const [historicoGeral,setHistoricoGeral] = useState<ScoreRegistro[]>([]);
+  useEffect(() => {
+    if (!isDbOnline() || !patient.rowId) return;
+    let ativo = true;
+    loadScores(patient.rowId).then(regs => { if (ativo && regs) setHistoricoGeral(regs); });
+    return () => { ativo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCalc]);
+
+  // agrupa por dia (dd/mm/yyyy) para exibir "por data"
+  const historicoPorData = (() => {
+    const grupos = new Map<string, ScoreRegistro[]>();
+    historicoGeral.forEach(h => {
+      const dia = new Date(h.date).toLocaleDateString('pt-BR');
+      const arr = grupos.get(dia) ?? [];
+      arr.push(h); grupos.set(dia, arr);
+    });
+    return [...grupos.entries()];
+  })();
+
+  if (!activeCalc) return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-3">
+        {[
+          {key:'conforto', icon:'fa-child', title:'Conforto Respiratório', sub:'Silverman (RN) · Wood-Downes-Ferrés · Insuf. Resp.'},
+          {key:'glasgow',  icon:'fa-brain', title:'Glasgow',               sub:'Por faixa etária · 3–15'},
+          {key:'comfort',  icon:'fa-bed',   title:'COMFORT-B',             sub:'Dor e desconforto · 6–30'},
+          {key:'vnicnaf',  icon:'fa-wind',  title:'Resposta VNI/CNAF',     sub:'Escore de resposta · 0–14'},
+        ].map(c=>(
+          <button key={c.key} onClick={()=>setActiveCalc(c.key)}
+            className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-clinical-400 dark:hover:border-clinical-500/60 p-4 rounded-xl text-left group transition">
+            <div className="w-10 h-10 bg-clinical-500 text-white rounded-xl flex items-center justify-center text-lg shadow-md mb-3 group-hover:scale-105 transition-transform">
+              <i className={`fa-solid ${c.icon}`}></i>
+            </div>
+            <h4 className="text-xs font-bold text-slate-800 dark:text-white mb-1">{c.title}</h4>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">{c.sub}</p>
+          </button>
+        ))}
+      </div>
+
+      {/* Scores cadastrados, organizados por data */}
+      {historicoPorData.length > 0 && (
+        <div className="border-t border-slate-200 dark:border-slate-800 pt-4">
+          <SectionLabel icon="fa-clock-rotate-left" text="Scores Cadastrados — por Data"/>
+          <div className="space-y-3">
+            {historicoPorData.map(([dia,itens])=>(
+              <div key={dia}>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-[10px] font-bold text-clinical-600 dark:text-clinical-400 bg-clinical-50 dark:bg-clinical-500/10 border border-clinical-200 dark:border-clinical-500/30 px-2 py-0.5 rounded-full">
+                    <i className="fa-regular fa-calendar mr-1"></i>{dia}
+                  </span>
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500">{itens.length} registro{itens.length!==1?'s':''}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {itens.map((h,i)=>(
+                    <div key={i} className="flex items-center justify-between gap-2 text-[11px] bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-1.5">
+                      <div className="min-w-0">
+                        <span className="font-bold text-slate-700 dark:text-slate-200">{h.scale_name}</span>
+                        <span className="text-slate-400 dark:text-slate-500 ml-2">{new Date(h.date).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</span>
+                      </div>
+                      <span className="shrink-0 text-slate-600 dark:text-slate-300 font-semibold">{h.score} <span className="font-normal text-slate-400">· {h.interpretation}</span></span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const glasgowItens: EscalaItem[] = [
+    { id:'ocular', label:'Abertura Ocular', opcoes: GLASGOW_OCULAR },
+    { id:'verbal', label:'Resposta Verbal', opcoes: GLASGOW_FAIXAS[glasgowFaixa].verbal },
+    { id:'motora', label:'Resposta Motora', opcoes: GLASGOW_FAIXAS[glasgowFaixa].motora },
+  ];
+  const comfortItens: EscalaItem[] = [
+    COMFORT_BASE.alerta, COMFORT_BASE.calma,
+    intubado ? COMFORT_BASE.respiracao : COMFORT_BASE.choro,
+    COMFORT_BASE.movimento, COMFORT_BASE.tonus, COMFORT_BASE.tensao,
+  ];
 
   return (
     <div className="space-y-4">
       <button onClick={()=>setActiveCalc(null)} className="flex items-center gap-2 text-xs text-slate-500 hover:text-clinical-500 transition-colors">
         <i className="fa-solid fa-arrow-left"></i> Voltar
       </button>
+
       {activeCalc==='conforto' && (
-        <form onChange={e=>{const fd=new FormData(e.currentTarget as HTMLFormElement);setDfTotal([...fd.values()].reduce((s,v)=>s+(parseInt(v as string)||0),0));}} className="space-y-3">
+        <div className="space-y-3">
           <div className="bg-clinical-50 dark:bg-slate-900 border border-clinical-200 dark:border-clinical-500/30 p-3 rounded-xl">
-            <span className="text-[10px] font-bold text-clinical-600 dark:text-clinical-400 uppercase tracking-wider">Escala de Downes-Ferrés</span>
+            <span className="text-[10px] font-bold text-clinical-600 dark:text-clinical-400 uppercase tracking-wider block mb-2">Conforto Respiratório — Faixa Etária</span>
+            <FaixaChips<'rn'|'lactente'|'crianca'>
+              opcoes={[
+                {key:'rn',label:'RN (0–28d) · Silverman'},
+                {key:'lactente',label:'Lactente (até 2a) · Wood-Downes-Ferrés'},
+                {key:'crianca',label:'Pré-escolar+ · Insuf. Resp.'},
+              ]}
+              valor={confortoFaixa} onChange={setConfortoFaixa}
+            />
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            {['FR','Tiragem','Entrada de Ar','Sibilância','Cianose','Gemido'].map((label,i)=>(
-              <div key={i}>
-                <label className="text-[9px] font-bold uppercase text-slate-400 dark:text-slate-500 tracking-widest block mb-1">{label}</label>
-                <select name={`q${i}`} className={selectCls}>
-                  <option value="0">Normal [0]</option><option value="1">Leve/Mod [1]</option><option value="2">Grave [2]</option>
-                </select>
-              </div>
-            ))}
-          </div>
-          <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-xl flex items-center justify-between">
-            <span className="text-3xl font-extrabold text-slate-800 dark:text-white font-mono">{dfTotal}<span className="text-slate-400 text-lg"> / 12</span></span>
-            <span className={`px-3 py-1.5 rounded-xl text-xs font-bold border ${badge().c}`}>{badge().t}</span>
-          </div>
-        </form>
-      )}
-      {activeCalc==='oxigenacao' && (
-        <div className="grid grid-cols-2 gap-3">
-          {[{l:'P/F',v:pf,a:+pf<200,r:+pf<100?'Grave':+pf<200?'Moderado':+pf<300?'Leve':'Normal'},
-            {l:'S/F',v:sf,a:+sf<264,r:'SpO₂/FiO₂ · <264 → P/F<200'},
-            {l:'ISO (OSI)',v:osi??'—',a:osi!==null&&osi>12,r:osi!==null?'MAP×FiO₂×100/SpO₂':'Registrar MAP na gasometria'},
-            {l:'IO', v:oi??'—',a:oi!==null&&oi>8,r:oi!==null?'MAP×FiO₂×100/PaO₂':'Registrar MAP na gasometria'}].map(item=>(
-            <div key={item.l} className={`p-4 rounded-xl border ${item.a?'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-700/40':'bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800'}`}>
-              <span className="text-[9px] font-bold uppercase text-slate-400 dark:text-slate-500 tracking-widest block mb-1">{item.l}</span>
-              <span className={`text-2xl font-extrabold font-mono ${item.a?'text-rose-600 dark:text-rose-400':'text-slate-800 dark:text-white'}`}>{item.v}</span>
-              <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">{item.r}</p>
-            </div>
-          ))}
+          {confortoFaixa==='rn'       && <EscalaRoundForm key="rn"  scaleName="Silverman-Anderson"    patientRowId={patient.rowId} itens={SILVERMAN_ITENS} max={10} interpreta={interpretaSilverman}/>}
+          {confortoFaixa==='lactente' && <EscalaRoundForm key="wdf" scaleName="Wood-Downes-Ferrés"     patientRowId={patient.rowId} itens={WDF_ITENS}       max={14} interpreta={interpretaWDF}/>}
+          {confortoFaixa==='crianca'  && <EscalaRoundForm key="ins" scaleName="Ins. Resp. Pediátrica"  patientRowId={patient.rowId} itens={INSUF_ITENS}     max={12} interpreta={interpretaInsuf}/>}
         </div>
       )}
-      {activeCalc==='parametros' && (
-        <div className="grid grid-cols-2 gap-3">
-          {[{l:'VC alvo (5mL/kg)',v:`${vcAlvo} mL`,a:false,r:`5×${patient.pesoKg}kg`},
-            {l:'VC máx (8mL/kg)', v:`${+(8*patient.pesoKg).toFixed(0)} mL`,a:false,r:`8×${patient.pesoKg}kg`},
-            {l:'FiO₂ atual',       v:`${Math.round(patient.fio2*100)}%`,a:patient.fio2>0.6,r:'>60% — revisar'},
-            {l:'SpO₂',            v:`${patient.spO2}%`,a:patient.spO2<94,r:'Alvo 94–98%'}].map(item=>(
-            <div key={item.l} className={`p-4 rounded-xl border ${item.a?'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-700/40':'bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800'}`}>
-              <span className="text-[9px] font-bold uppercase text-slate-400 dark:text-slate-500 tracking-widest block mb-1">{item.l}</span>
-              <span className={`text-2xl font-extrabold font-mono ${item.a?'text-rose-600 dark:text-rose-400':'text-slate-800 dark:text-white'}`}>{item.v}</span>
-              <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">{item.r}</p>
-            </div>
-          ))}
+
+      {activeCalc==='glasgow' && (
+        <div className="space-y-3">
+          <div className="bg-clinical-50 dark:bg-slate-900 border border-clinical-200 dark:border-clinical-500/30 p-3 rounded-xl">
+            <span className="text-[10px] font-bold text-clinical-600 dark:text-clinical-400 uppercase tracking-wider block mb-2">Escala de Glasgow — Versão</span>
+            <FaixaChips<'lactente'|'crianca'|'adulto'>
+              opcoes={[
+                {key:'lactente',label:'< 1 ano'},
+                {key:'crianca',label:'1 a 4 anos'},
+                {key:'adulto',label:'≥ 5 anos'},
+              ]}
+              valor={glasgowFaixa} onChange={setGlasgowFaixa}
+            />
+          </div>
+          <EscalaRoundForm key={glasgowFaixa} scaleName="Escala de Glasgow" patientRowId={patient.rowId} itens={glasgowItens} max={15} interpreta={interpretaGlasgow}/>
         </div>
       )}
-      {activeCalc==='mecanica' && (
-        <div className="text-center py-10">
-          <i className="fa-solid fa-person-digging text-4xl text-slate-300 dark:text-slate-600 mb-3 block"></i>
-          <p className="text-sm font-bold text-slate-400">Módulo em Desenvolvimento</p>
+
+      {activeCalc==='comfort' && (
+        <div className="space-y-3">
+          <div className="bg-clinical-50 dark:bg-slate-900 border border-clinical-200 dark:border-clinical-500/30 p-3 rounded-xl">
+            <span className="text-[10px] font-bold text-clinical-600 dark:text-clinical-400 uppercase tracking-wider block mb-2">Escala COMFORT-B — Domínio 3</span>
+            <FaixaChips
+              opcoes={[
+                {key:'nao' as const,label:'Não intubado (Choro)'},
+                {key:'sim' as const,label:'Intubado (Respiração)'},
+              ]}
+              valor={intubado?'sim':'nao'} onChange={v=>setIntubado(v==='sim')}
+            />
+          </div>
+          <EscalaRoundForm key={intubado?'int':'ni'} scaleName="COMFORT-B" patientRowId={patient.rowId} itens={comfortItens} max={30} interpreta={interpretaComfort}/>
+        </div>
+      )}
+
+      {activeCalc==='vnicnaf' && (
+        <div className="space-y-3">
+          <div className="bg-clinical-50 dark:bg-slate-900 border border-clinical-200 dark:border-clinical-500/30 p-3 rounded-xl">
+            <span className="text-[10px] font-bold text-clinical-600 dark:text-clinical-400 uppercase tracking-wider">Escore de Resposta a VNI/CNAF em Pediatria</span>
+          </div>
+          <EscalaRoundForm scaleName="Escore VNI/CNAF" patientRowId={patient.rowId} itens={VNICNAF_ITENS} max={14} interpreta={interpretaVniCnaf}/>
         </div>
       )}
     </div>
@@ -411,6 +773,7 @@ function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>
   const [,refresh] = useState(0);
   const s  = STATUS_STYLE[patient.status];
   const dias = calcDias(patient.data_internacao);
+  const alertaResp = patient.alertaResp ?? isRespiratorio(patient.diagnostico);
 
   /* ── Cabeçalho editável ── */
   const [editHeader,setEditHeader] = useState(false);
@@ -431,16 +794,56 @@ function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>
       volCorrenteAlvo: parseInt(hdr.volCorrenteAlvo) || patient.volCorrenteAlvo,
       fisioResponsavel: hdr.fisioResponsavel.trim() || patient.fisioResponsavel,
     });
+    void persistPatient(patient);
     setEditHeader(false); refresh(n=>n+1);
   };
 
-  /* ── Sinais vitais por turno (M/T/N) ── */
-  const [turnoVital,setTurnoVital] = useState<TurnoKey>('M');
-  const [vitais,setVitais] = useState<Record<TurnoKey,typeof VITAL_VAZIO>>({
+  /* ── Sinais vitais por data e turno (M/T/N) — tabela fisio_sinais_vitais ── */
+  const hojeInput = new Date().toISOString().slice(0,10);
+  const vitaisIniciais = (): Record<TurnoKey,typeof VITAL_VAZIO> => ({
     M:{spO2:String(patient.spO2),fc:String(patient.fc),fr:patient.vm?'':String(patient.fr),pas:String(patient.pas),pad:String(patient.pad),temp:String(patient.temp)},
     T:{...VITAL_VAZIO}, N:{...VITAL_VAZIO},
   });
+  const [turnoVital,setTurnoVital] = useState<TurnoKey>('M');
+  const [svData,setSvData] = useState(hojeInput);
+  const [svStatus,setSvStatus] = useState<string|null>(null);
+  const [vitais,setVitais] = useState<Record<TurnoKey,typeof VITAL_VAZIO>>(vitaisIniciais);
   const [instab,setInstab] = useState<Record<TurnoKey,string[]>>({M:[],T:[],N:[]});
+
+  // ao abrir a ficha (ou trocar a data), busca os registros salvos daquele dia
+  useEffect(() => {
+    setSvStatus(null);
+    setVitais(svData === hojeInput ? vitaisIniciais() : {M:{...VITAL_VAZIO},T:{...VITAL_VAZIO},N:{...VITAL_VAZIO}});
+    setInstab({M:[],T:[],N:[]});
+    if (!patient.rowId) return;
+    let ativo = true;
+    loadSinaisVitais(patient.rowId, svData).then(regs => {
+      if (!ativo || !regs) return;
+      setVitais(prev => {
+        const nv = {...prev};
+        (['M','T','N'] as TurnoKey[]).forEach(t => {
+          const r = regs[t];
+          if (r) nv[t] = { spO2:r.spO2, fc:r.fc, fr:r.fr, pas:r.pas, pad:r.pad, temp:r.temp };
+        });
+        return nv;
+      });
+      setInstab(prev => {
+        const ni = {...prev};
+        (['M','T','N'] as TurnoKey[]).forEach(t => { const r = regs[t]; if (r) ni[t] = r.instabilidades; });
+        return ni;
+      });
+    });
+    return () => { ativo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [svData]);
+
+  const salvarSinais = async () => {
+    if (!patient.rowId) { setSvStatus('demo'); return; }
+    const ok = await saveSinaisVitais(patient.rowId, svData, turnoVital, {
+      ...vitais[turnoVital], instabilidades: instab[turnoVital],
+    });
+    setSvStatus(ok ? `salvo:${new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}` : 'erro');
+  };
   const setVital = (k:string,v:string) => setVitais(vs=>({...vs,[turnoVital]:{...vs[turnoVital],[k]:v}}));
   const toggleInstab = (a:string) => setInstab(m=>({
     ...m,[turnoVital]: m[turnoVital].includes(a) ? m[turnoVital].filter(x=>x!==a) : [...m[turnoVital],a],
@@ -456,14 +859,16 @@ function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>
   }, [frSeg]);
   const iniciarFR = () => { setFrLiberado(l=>({...l,[turnoVital]:true})); setFrSeg(60); };
 
-  /* ── Suporte Ventilatório Atual ── */
-  const [suporte,setSuporte] = useState(patient.suporte);
-  const [vmModo,setVmModo] = useState('');
-  const [vmModalidade,setVmModalidade] = useState('');
-  const [ventParams,setVentParams] = useState<Record<string,string>>({});
-  const [suporteStatus,setSuporteStatus] = useState('Mantido');
-  const [progExtub,setProgExtub] = useState(false);
-  const [progExtubData,setProgExtubData] = useState('');
+  /* ── Suporte Ventilatório Atual (tabela fisio_suporte_ventilatorio) ── */
+  const sd = patient.suporteDetalhe;
+  const [suporte,setSuporte] = useState(sd?.suporte ?? patient.suporte);
+  const [vmModo,setVmModo] = useState(sd?.modo ?? '');
+  const [vmModalidade,setVmModalidade] = useState(sd?.modalidade ?? '');
+  const [ventParams,setVentParams] = useState<Record<string,string>>(sd?.parametros ?? {});
+  const [suporteStatus,setSuporteStatus] = useState(sd?.situacao ?? 'Mantido');
+  const [progExtub,setProgExtub] = useState(sd?.progExtubacao ?? false);
+  const [progExtubData,setProgExtubData] = useState(sd?.progExtubacaoData ?? '');
+  const [suporteSalvo,setSuporteSalvo] = useState(false);
   const trocarSuporte = (v:string) => { setSuporte(v); setVmModo(''); setVmModalidade(''); setVentParams({}); };
   const setParam = (k:string,v:string) => setVentParams(p=>({...p,[k]:v}));
   const modalidadeAtiva = vmModo==='Espontâneo (PSV)' ? 'Espontâneo (PSV)' : vmModalidade;
@@ -497,14 +902,25 @@ function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>
     if (restricaoDecub && (!decubLado || !decubJust.trim())) faltas.push('Restrição de decúbito: lado e justificativa');
     return faltas;
   };
-  const salvarFicha = () => {
+  const salvarFicha = async () => {
     const faltas = validarFicha();
     setErros(faltas);
     if (faltas.length) { setSalvo(false); return; }
     patient.suporte = suporte;
     patient.vm = isVM(suporte);
+    // suporte ventilatório vai para a tabela separada fisio_suporte_ventilatorio
+    const detalhe = {
+      suporte, situacao: suporteStatus, modo: vmModo, modalidade: vmModalidade,
+      progExtubacao: progExtub, progExtubacaoData: progExtubData, parametros: ventParams,
+    };
+    patient.suporteDetalhe = detalhe;
+    void persistPatient(patient);
+    if (patient.rowId) {
+      const ok = await saveSuporteVentilatorio(patient.rowId, detalhe);
+      setSuporteSalvo(ok);
+    }
     setSalvo(true);
-    setTimeout(()=>setSalvo(false), 4000);
+    setTimeout(()=>{ setSalvo(false); setSuporteSalvo(false); }, 4000);
   };
 
   /* ── Resumo das últimas 24h ── */
@@ -612,10 +1028,25 @@ function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>
           <span className="text-[10px] bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 px-2.5 py-1 rounded-full font-medium">
             <i className="fa-solid fa-lungs mr-1 text-clinical-500 dark:text-clinical-400"></i>{patient.suporte}
           </span>
-          {patient.contato && <span className="text-[10px] font-bold bg-amber-100 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700/40 text-amber-700 dark:text-amber-400 px-2.5 py-1 rounded-full"><i className="fa-solid fa-shield-virus mr-1"></i>Contato</span>}
+          {precaucoesDe(patient).map(t=>(
+            <span key={t} className="text-[10px] font-bold bg-amber-100 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700/40 text-amber-700 dark:text-amber-400 px-2.5 py-1 rounded-full"><i className="fa-solid fa-shield-virus mr-1"></i>{PRECAUCAO_LABEL[t] ?? t}</span>
+          ))}
           {patient.vm      && <span className="text-[10px] font-bold bg-rose-100 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-700/40 text-rose-700 dark:text-rose-400 px-2.5 py-1 rounded-full"><i className="fa-solid fa-wind mr-1"></i>VM Invasiva</span>}
         </div>
       </div>
+
+      {/* Alerta de doença respiratória — abaixo dos dados do paciente */}
+      {alertaResp && (
+        <div className="bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-700/40 rounded-2xl p-4 flex items-center gap-3">
+          <span className="w-10 h-10 rounded-xl bg-rose-500 text-white flex items-center justify-center shrink-0 shadow-md shadow-rose-500/30 animate-pulse">
+            <i className="fa-solid fa-lungs text-lg"></i>
+          </span>
+          <div>
+            <p className="text-xs font-extrabold text-rose-600 dark:text-rose-400 uppercase tracking-wider">Alerta: Doença Respiratória</p>
+            <p className="text-[11px] text-rose-500/90 dark:text-rose-400/80 mt-0.5">Paciente com diagnóstico respiratório ativo — priorizar avaliação da fisioterapia respiratória.</p>
+          </div>
+        </div>
+      )}
 
       {/* Sinais Vitais — editáveis por turno M/T/N */}
       <div className={`${card} p-5`}>
@@ -623,15 +1054,20 @@ function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>
           <h3 className="text-xs font-bold uppercase tracking-wider text-clinical-600 dark:text-clinical-400 flex items-center gap-2">
             <i className="fa-solid fa-heart-pulse"></i> Sinais Vitais
           </h3>
-          <div className="flex gap-1">
-            {(['M','T','N'] as TurnoKey[]).map(t=>(
-              <button key={t} onClick={()=>setTurnoVital(t)}
-                className={`w-9 h-8 rounded-lg text-xs font-bold transition ${turnoVital===t
-                  ?'bg-clinical-500 text-white shadow-md shadow-clinical-500/30'
-                  :'bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-800 hover:border-clinical-400'}`}>
-                {t}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 flex-wrap">
+            <input type="date" value={svData} onChange={e=>setSvData(e.target.value)}
+              title="Data dos sinais vitais"
+              className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs rounded-lg px-2 py-1.5 text-slate-700 dark:text-white focus:outline-none focus:border-clinical-500 transition-colors"/>
+            <div className="flex gap-1">
+              {(['M','T','N'] as TurnoKey[]).map(t=>(
+                <button key={t} onClick={()=>{setTurnoVital(t);setSvStatus(null);}}
+                  className={`w-9 h-8 rounded-lg text-xs font-bold transition ${turnoVital===t
+                    ?'bg-clinical-500 text-white shadow-md shadow-clinical-500/30'
+                    :'bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-800 hover:border-clinical-400'}`}>
+                  {t}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -697,12 +1133,51 @@ function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>
             </div>
           )}
         </div>
+
+        {/* Salvar os sinais vitais da data/turno no banco */}
+        <div className="mt-3 flex items-center justify-end gap-3 flex-wrap">
+          {svStatus==='demo' && (
+            <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+              <i className="fa-solid fa-triangle-exclamation mr-1"></i>Modo demonstração — registro não vai para o banco
+            </span>
+          )}
+          {svStatus==='erro' && (
+            <span className="text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+              <i className="fa-solid fa-circle-exclamation mr-1"></i>Sem conexão com o banco — tente novamente
+            </span>
+          )}
+          {svStatus?.startsWith('salvo:') && (
+            <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+              <i className="fa-solid fa-circle-check mr-1"></i>Salvo às {svStatus.slice(6)}
+            </span>
+          )}
+          <button onClick={salvarSinais}
+            className="bg-clinical-500 hover:bg-clinical-600 text-white font-bold text-xs px-4 py-2 rounded-xl transition flex items-center gap-2">
+            <i className="fa-solid fa-floppy-disk"></i> Salvar Sinais Vitais — Turno {turnoVital}
+          </button>
+        </div>
       </div>
 
-      {/* Diagnóstico */}
+      {/* Diagnóstico principal — vem dos diagnósticos ativos do Round */}
       <div className={`${card} p-4`}>
-        <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Diagnóstico</span>
-        <p className="text-sm font-semibold text-slate-800 dark:text-white">{patient.diagnostico}</p>
+        <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Diagnóstico Principal</span>
+        {patient.diagnosticos?.length ? (
+          <ul className="space-y-1">
+            {patient.diagnosticos.map(d=>(
+              <li key={d} className="text-sm font-semibold text-slate-800 dark:text-white flex items-start gap-2">
+                <i className="fa-solid fa-circle text-[5px] text-clinical-500 mt-2 shrink-0"></i>{d}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm font-semibold text-slate-800 dark:text-white">{patient.diagnostico}</p>
+        )}
+        {patient.diagSecundarios && patient.diagSecundarios.length > 0 && (
+          <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Secundários</span>
+            <p className="text-xs text-slate-500 dark:text-slate-400">{patient.diagSecundarios.join(' · ')}</p>
+          </div>
+        )}
       </div>
 
       {/* Resumo das últimas 24h de intervenção ventilatória */}
@@ -962,7 +1437,9 @@ function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>
               {salvo && (
                 <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-700/40 rounded-xl p-3 flex items-center gap-2">
                   <i className="fa-solid fa-circle-check text-emerald-500"></i>
-                  <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">Ficha salva com sucesso.</span>
+                  <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                    Ficha salva com sucesso.{suporteSalvo && ' Suporte ventilatório gravado na tabela fisio_suporte_ventilatorio.'}
+                  </span>
                 </div>
               )}
               <button onClick={salvarFicha} className="w-full bg-clinical-500 hover:bg-clinical-600 text-white font-bold py-3 rounded-xl text-xs transition flex items-center justify-center gap-2">
@@ -971,7 +1448,7 @@ function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>
             </div>
           )}
 
-          {tab==='dispositivos' && <DispositivosPanel patient={patient}/>}
+          {tab==='dispositivos' && <DispositivosPanel patient={patient} onSuporteSugerido={trocarSuporte}/>}
           {tab==='gas'          && <GasometriaPanel   patient={patient}/>}
           {tab==='scores'       && <ScoresPanel        patient={patient}/>}
 
@@ -996,42 +1473,29 @@ function PatientDetail({patient,onBack,onDischarge}:{patient:Patient;onBack:()=>
   );
 }
 
-/* ─── ADMISSÃO MANUAL ─────────────────────────────────── */
+/* ─── ADMISSÃO MANUAL — mesmos campos do cadastro do n8n ──
+   (nó "Criar Novos": name, bed_number, dob, dt_internacao)  */
 function AdmitModal({onClose,onAdmit}:{onClose:()=>void;onAdmit:()=>void}) {
-  const [f,setF] = useState({
-    leito:String(nextFreeBed()), prontuario:'', nome:'', nasc:'', sexo:'Masculino' as Sexo, mae:'',
-    peso:'', alt:'', diagnostico:'', suporte:'Ar Ambiente', fisio:'',
-  });
+  const hojeInput = new Date().toISOString().slice(0,10);
+  const [f,setF] = useState({ nome:'', nasc:'', leito:String(nextFreeBed()), internacao: hojeInput });
   const [erro,setErro] = useState('');
   const set = (k:string,v:string)=>setF(x=>({...x,[k]:v}));
   const confirmar = () => {
     const leito = parseInt(f.leito);
-    if (!leito || !f.nome.trim() || !f.nasc || !f.prontuario.trim()) { setErro('Preencha leito, nome, nascimento e prontuário.'); return; }
+    if (!f.nome.trim() || !f.nasc || !leito) { setErro('Preencha nome, nascimento e leito.'); return; }
     if (PATIENTS.some(p=>p.id===leito)) { setErro(`O leito ${leito} já está ocupado.`); return; }
-    const hoje = new Date().toLocaleDateString('pt-BR');
-    const peso = parseFloat(f.peso)||0;
-    admitPatient({
-      id:leito, prontuario:f.prontuario.trim(), nome:f.nome.trim().toUpperCase(), nasc:fromInputDate(f.nasc),
-      sexo:f.sexo, mae:f.mae.trim().toUpperCase(), fisioResponsavel:f.fisio.trim()||'—',
-      status:'Estável', contato:false, diagnostico:f.diagnostico.trim()||'—', suporte:f.suporte, vm:isVM(f.suporte),
-      data_internacao:hoje, pesoKg:peso, altCm:parseFloat(f.alt)||0,
-      spO2:97, fc:120, fr:30, pas:90, pad:50, temp:36.5, fio2:0.21, pao2:90,
-      evolucao:'Paciente admitido na UTI PED.',
-      satAlvoMin:94, satAlvoMax:98, volCorrenteAlvo:Math.round(5*peso),
-      gas:[], dispositivos:[{id:1,device:f.suporte,inicio:hoje}],
-    });
+    const base = fichaInicial(
+      f.nome.trim().toUpperCase(), leito,
+      fromInputDate(f.nasc), fromInputDate(f.internacao || hojeInput),
+    );
+    admitPatient({ ...base, evolucao: 'Paciente admitido manualmente.' });
     onAdmit();
   };
   const campos: {k:string;label:string;type?:string;span2?:boolean}[] = [
     {k:'nome',label:'Nome Completo *',span2:true},
     {k:'nasc',label:'Nascimento *',type:'date'},
-    {k:'prontuario',label:'Prontuário *'},
+    {k:'internacao',label:'Data de Internação',type:'date'},
     {k:'leito',label:'Leito *',type:'number'},
-    {k:'mae',label:'Mãe'},
-    {k:'peso',label:'Peso (kg)',type:'number'},
-    {k:'alt',label:'Altura (cm)',type:'number'},
-    {k:'diagnostico',label:'Diagnóstico Principal',span2:true},
-    {k:'fisio',label:'Fisioterapeuta Responsável',span2:true},
   ];
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
@@ -1047,22 +1511,16 @@ function AdmitModal({onClose,onAdmit}:{onClose:()=>void;onAdmit:()=>void}) {
           {campos.map(c=>(
             <div key={c.k} className={c.span2?'col-span-2':''}>
               <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">{c.label}</label>
-              <input type={c.type||'text'} value={(f as any)[c.k]} onChange={e=>set(c.k,e.target.value)} className={inputCls}/>
+              <input type={c.type||'text'} value={(f as any)[c.k]}
+                onChange={e=>set(c.k, c.k==='nome' ? e.target.value.toUpperCase() : e.target.value)}
+                className={inputCls}/>
             </div>
           ))}
-          <div>
-            <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Sexo</label>
-            <select value={f.sexo} onChange={e=>set('sexo',e.target.value)} className={selectCls}>
-              <option>Masculino</option><option>Feminino</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 block mb-1">Suporte na Admissão</label>
-            <select value={f.suporte} onChange={e=>set('suporte',e.target.value)} className={selectCls}>
-              {DEVICE_OPTIONS.map(d=><option key={d}>{d}</option>)}
-            </select>
-          </div>
         </div>
+        <p className="mt-3 text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
+          <i className="fa-solid fa-circle-info mr-1"></i>
+          Os demais dados (sexo, mãe, peso, alvos, suporte ventilatório...) são preenchidos depois, na ficha do paciente.
+        </p>
         {erro && (
           <p className="mt-3 text-[11px] font-bold text-rose-600 dark:text-rose-400">
             <i className="fa-solid fa-circle-exclamation mr-1"></i>{erro}
@@ -1080,11 +1538,18 @@ function AdmitModal({onClose,onAdmit}:{onClose:()=>void;onAdmit:()=>void}) {
 }
 
 /* ─── LISTA DE LEITOS ─────────────────────────────────── */
-export default function Bedside() {
+export default function Bedside({dbStatus}:{dbStatus?:string}) {
   const [search,setSearch]     = useState('');
   const [selected,setSelected] = useState<Patient|null>(null);
   const [showAdmit,setShowAdmit] = useState(false);
   const [,refresh] = useState(0);
+  // enquanto os pacientes reais não chegam do Supabase, não mostra os de demonstração
+  if (dbStatus === 'carregando') return (
+    <section className="p-6 flex flex-col items-center justify-center h-full text-slate-400 dark:text-slate-500 gap-3">
+      <i className="fa-solid fa-circle-notch fa-spin text-3xl text-clinical-500"></i>
+      <p className="text-sm font-semibold">Carregando pacientes do banco...</p>
+    </section>
+  );
   const filtered = PATIENTS.filter(p =>
     p.nome.toLowerCase().includes(search.toLowerCase()) || String(p.id).includes(search)
   );
@@ -1151,7 +1616,10 @@ export default function Bedside() {
                   <span className="hidden md:inline text-slate-400 dark:text-slate-500"> · Alvo SpO₂ {p.satAlvoMin}–{p.satAlvoMax}% · VC {p.volCorrenteAlvo}mL</span>
                 </p>
                 <div className="flex items-center gap-2 mt-1.5">
-                  {p.contato && <span className="text-[10px] font-bold bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-700/40 px-2 py-0.5 rounded-full"><i className="fa-solid fa-shield-virus mr-1"></i>Contato</span>}
+                  {precaucoesDe(p).map(t=>(
+                    <span key={t} className="text-[10px] font-bold bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-700/40 px-2 py-0.5 rounded-full"><i className="fa-solid fa-shield-virus mr-1"></i>{PRECAUCAO_LABEL[t] ?? t}</span>
+                  ))}
+                  {(p.alertaResp ?? isRespiratorio(p.diagnostico)) && <span className="text-[10px] font-bold bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-700/40 px-2 py-0.5 rounded-full"><i className="fa-solid fa-lungs mr-1"></i>Alerta Resp.</span>}
                   {p.vm      && <span className="text-[10px] font-bold bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-700/40 px-2 py-0.5 rounded-full"><i className="fa-solid fa-wind mr-1"></i>VM</span>}
                   {p.status==='Crítico' && <span className="text-[10px] font-bold bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-700/40 px-2 py-0.5 rounded-full animate-pulse"><i className="fa-solid fa-triangle-exclamation mr-1"></i>Atenção</span>}
                 </div>

@@ -99,7 +99,7 @@ function DonutCenter({ value, title, sub }: { value: string | number; title: str
   );
 }
 
-export default function Dashboard({ setCurrentView, turno, physioName }: any) {
+export default function Dashboard({ setCurrentView, turno, physioName, dbStatus }: any) {
   /* ── Dados derivados dos pacientes ── */
   const occupied      = PATIENTS.length;
   const vacant        = Math.max(0, TOTAL_BEDS - occupied);
@@ -482,6 +482,16 @@ export default function Dashboard({ setCurrentView, turno, physioName }: any) {
       setExportingPdf(false);
     }
   };
+
+  // enquanto os pacientes reais não chegam do Supabase, evita mostrar os números de demonstração
+  if (dbStatus === 'carregando') {
+    return (
+      <section className="p-4 sm:p-6 flex flex-col items-center justify-center h-full text-slate-400 dark:text-slate-500 gap-3">
+        <i className="fa-solid fa-circle-notch fa-spin text-3xl text-clinical-500"></i>
+        <p className="text-sm font-semibold">Carregando pacientes do banco...</p>
+      </section>
+    );
+  }
 
   return (
     <section className="p-4 sm:p-6 space-y-6">

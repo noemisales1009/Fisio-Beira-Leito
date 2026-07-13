@@ -5,9 +5,12 @@ import Dashboard from './components/Dashboard';
 import Scores from './components/Scores';
 import Bedside from './components/Bedside';
 import TurnoModal, { TURNO_OPTIONS } from './components/TurnoModal';
+import { loadPatients } from './patients';
+import { supabase } from './supabaseClient';
+import type { User } from '@supabase/supabase-js';
 
 const TURNO_STORAGE_KEY = 'fisio_turno';
-const PHYSIO_NAME = 'Dra. Mariana S.';
+const DEMO_NAME = 'Dra. Mariana S.';
 
 function suggestTurno() {
   const hour = new Date().getHours();
@@ -27,6 +30,41 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [turno, setTurno] = useState<string | null>(null);
   const [showTurnoModal, setShowTurnoModal] = useState(false);
+  const [dbStatus, setDbStatus] = useState<'carregando' | 'online' | 'offline'>('carregando');
+  const [userName, setUserName] = useState('');
+  const [userInfo, setUserInfo] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  // nome de quem está logado: tabela public.users → user_metadata → e-mail
+  const carregarPerfil = async (user: User) => {
+    let nome = (user.user_metadata as any)?.name || '';
+    let info = user.email ?? '';
+    try {
+      const { data } = await supabase.from('users').select('name, sector, role').eq('id', user.id).single();
+      if (data?.name) nome = data.name;
+      const detalhe = [data?.role, data?.sector].filter(Boolean).join(' · ');
+      if (detalhe) info = detalhe;
+    } catch { /* sem acesso ao perfil — usa os dados da sessão */ }
+    setUserName(nome || (user.email?.split('@')[0] ?? 'Fisioterapeuta'));
+    setUserInfo(info);
+  };
+
+  // restaura a sessão salva (não pede login de novo ao recarregar a página)
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        void carregarPerfil(session.user);
+        setIsLoggedIn(true);
+      }
+    });
+  }, []);
+
+  // carrega os pacientes reais do Supabase (tabela patients, a mesma do n8n)
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    loadPatients().then(setDbStatus);
+  }, [isLoggedIn]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -68,9 +106,35 @@ export default function App() {
     }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoggingIn(true);
+    setLoginError('');
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    setLoggingIn(false);
+    if (error || !data.user) {
+      setLoginError(
+        error?.message === 'Invalid login credentials'
+          ? 'E-mail ou senha inválidos.'
+          : `Não foi possível entrar: ${error?.message ?? 'erro desconhecido'}`
+      );
+      return;
+    }
+    await carregarPerfil(data.user);
     setIsLoggedIn(true);
+  };
+
+  const entrarDemo = () => {
+    setUserName(DEMO_NAME);
+    setUserInfo('Modo demonstração');
+    setIsLoggedIn(true);
+  };
+
+  const handleLogout = () => {
+    void supabase.auth.signOut();
+    setIsLoggedIn(false);
+    setUserName('');
+    setUserInfo('');
   };
 
   // Login Screen
@@ -118,11 +182,23 @@ export default function App() {
               </div>
             </div>
 
-            <button type="submit" className="w-full mt-4 bg-clinical-500 hover:bg-clinical-600 text-white font-bold py-3 px-4 rounded-xl shadow-lg shadow-clinical-500/20 transition duration-200 flex items-center justify-center gap-2">
-              Acessar Sistema <i className="fa-solid fa-arrow-right-to-bracket"></i>
+            {loginError && (
+              <p className="text-xs font-bold text-rose-600 dark:text-rose-400">
+                <i className="fa-solid fa-circle-exclamation mr-1"></i>{loginError}
+              </p>
+            )}
+
+            <button type="submit" disabled={loggingIn}
+              className="w-full mt-4 bg-clinical-500 hover:bg-clinical-600 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-xl shadow-lg shadow-clinical-500/20 transition duration-200 flex items-center justify-center gap-2">
+              {loggingIn ? <>Entrando... <i className="fa-solid fa-circle-notch fa-spin"></i></> : <>Acessar Sistema <i className="fa-solid fa-arrow-right-to-bracket"></i></>}
+            </button>
+
+            <button type="button" onClick={entrarDemo}
+              className="w-full text-[11px] text-slate-400 dark:text-slate-500 hover:text-clinical-500 transition-colors pt-1">
+              Entrar em modo demonstração (sem salvar dados)
             </button>
           </form>
-          
+
         </div>
       </div>
     );
@@ -135,7 +211,7 @@ export default function App() {
       <div className={`fixed inset-0 bg-black/80 z-40 transition-opacity md:hidden ${isMobileMenuOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsMobileMenuOpen(false)}></div>
       
       <div className={`fixed inset-y-0 left-0 z-50 w-64 transform transition-transform duration-300 md:relative md:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-         <Sidebar currentView={currentView} setCurrentView={setCurrentView} onLogout={() => setIsLoggedIn(false)} toggleMobileMenu={() => setIsMobileMenuOpen(!isMobileMenuOpen)} turno={turno} physioName={PHYSIO_NAME} />
+         <Sidebar currentView={currentView} setCurrentView={setCurrentView} onLogout={handleLogout} toggleMobileMenu={() => setIsMobileMenuOpen(!isMobileMenuOpen)} turno={turno} physioName={userName} userInfo={userInfo} />
       </div>
 
       {showTurnoModal && <TurnoModal suggested={suggestTurno()} onConfirm={handleSetTurno} />}
@@ -168,13 +244,25 @@ export default function App() {
             <span className="text-xs bg-clinical-50 dark:bg-clinical-500/10 text-clinical-600 dark:text-clinical-400 border border-clinical-200 dark:border-clinical-500/20 px-2.5 py-1 rounded-lg font-bold font-mono transition-colors duration-300">
               <i className="fa-solid fa-calendar-day mr-1"></i> {new Date().toLocaleDateString('pt-BR')}
             </span>
+            <span
+              title={dbStatus==='online' ? 'Conectado ao Supabase — dados salvos no banco' : dbStatus==='offline' ? 'Sem conexão com o banco — dados de demonstração (rode o SETUP_FISIO_SUPABASE.sql)' : 'Conectando ao banco...'}
+              className={`hidden sm:flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1.5 rounded-lg border transition-colors duration-300 ${
+                dbStatus==='online'
+                  ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-700/40'
+                  : dbStatus==='offline'
+                    ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-700/40'
+                    : 'bg-slate-100 dark:bg-slate-900 text-slate-400 border-slate-200 dark:border-slate-800'
+              }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${dbStatus==='online'?'bg-emerald-500':dbStatus==='offline'?'bg-amber-500':'bg-slate-400 animate-pulse'}`}></span>
+              {dbStatus==='online' ? 'Banco Online' : dbStatus==='offline' ? 'Demonstração' : 'Conectando...'}
+            </span>
           </div>
         </header>
 
         <div className="flex-1 overflow-y-auto">
-           {currentView === 'dashboard' && <Dashboard setCurrentView={setCurrentView} turno={turno} physioName={PHYSIO_NAME} />}
+           {currentView === 'dashboard' && <Dashboard setCurrentView={setCurrentView} turno={turno} physioName={userName} dbStatus={dbStatus} />}
            {currentView === 'scores' && <Scores />}
-           {currentView === 'bedside' && <Bedside />}
+           {currentView === 'bedside' && <Bedside dbStatus={dbStatus} />}
 
            {/* Placeholders for views not fully implemented to save tokens */}
            {['gasometry', 'admission'].includes(currentView) && (
